@@ -21,6 +21,7 @@ def main():
             # Determine selected sheets or all sheets
             sheets_to_process = [
                 sheet for sheet, checked in selected_sheets.items() if checked
+
             ] or None
             if all_sheets or not sheets_to_process:
                 sheets_to_process = sheet_names  # Process all sheets if "Select All" or no specific selection
@@ -184,13 +185,16 @@ def main():
         )
 
         try:
-            Pf.run_simulation(priceData)
+            progress_bar = st.progress(0)
+            Pf.run_simulation(priceData, progress_callback=lambda x: progress_bar.progress(x))
             st.session_state.Pf = Pf
             st.session_state.run_complete = True
             st.rerun()
         finally:
             message_placeholder.empty()
+            progress_bar.empty()  # Optionally clear the progress bar after completion
             st.session_state["simulating"] = False
+
 
     if st.session_state.get("run_complete", False) and not st.session_state.get(
         "simulating", False

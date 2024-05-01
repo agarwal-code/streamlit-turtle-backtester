@@ -592,8 +592,7 @@ class Portfolio:
 
         return numExits
 
-    def run_simulation(self, priceData):
-
+    def run_simulation(self, priceData, progress_callback=None):
         Pf = self
 
         price_column_numbers = [
@@ -602,7 +601,8 @@ class Portfolio:
             if col.startswith("price_")
         ]
 
-        for rowNo in range(len(priceData.index)):
+        total_rows = len(priceData.index)
+        for rowNo in range(total_rows):
             row = priceData.iloc[rowNo]
             time = row["time"]
             prices = [row.iloc[colNo] for colNo in price_column_numbers]
@@ -612,6 +612,11 @@ class Portfolio:
             Pf.checkExits(prices, time)
             Pf.checkEntries(prices, time)
             Pf.updateHistData(prices, time)
+
+            # Update progress bar
+            if progress_callback:
+                progress_percentage = (rowNo + 1) / total_rows
+                progress_callback(progress_percentage)
 
 
 def prepareDataFramesFromExcel(excel_file, *sheet_names):
