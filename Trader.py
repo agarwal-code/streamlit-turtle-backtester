@@ -945,6 +945,8 @@ def prepareDataFramesFromExcel(excel_file, sheet_names):
         # Handling missing values - example of dropping them
         df.dropna(subset=["time", "price"], inplace=True)
 
+        df.sort_values(by="time", ascending=True, inplace=True)
+
         # Reassign cleaned dataframe back to dictionary
         dataframesDict[key] = df[["time", "price"]].copy()
 
