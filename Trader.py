@@ -618,34 +618,35 @@ class Portfolio:
                 progress_percentage = (rowNo + 1) / total_rows
                 progress_callback(progress_percentage)
 
-
-def prepareDataFramesFromExcel(excel_file, *sheet_names):
-    # Determine which sheets to read based on the provided sheet names
-    if sheet_names:  # If specific sheet names are provided
-        all_sheets = pd.read_excel(excel_file, sheet_name=list(sheet_names), header=1)
-    else:  # If no sheet names are provided, read all sheets
-        all_sheets = pd.read_excel(excel_file, sheet_name=None, header=1)
-
-    # List to store DataFrames
-    dataframes = []
+def prepareDataFramesFromExcel(excel_file, sheet_names):
+    # Retrieve a dictionary of dataframes, with sheet_name as key
+    dataframesDict = pd.read_excel(excel_file, sheet_name=list(sheet_names), header=1)
 
     # Process each sheet
-    for df in all_sheets.values():
-        # Drop the 'strategyName' column
-        df.drop("strategyName", axis=1, inplace=True)
+    for key, df in dataframesDict.items():
+        # Assuming columns are identified by names containing keywords
+        time_col = next(col for col in df.columns if "time" in col.lower())
+        price_col = next(col for col in df.columns 
+                         if "net" in col.lower() or "amount" in col.lower() or "price" in col.lower())
 
-        # Rename columns
-        df.rename(columns={"tradeTime": "time", "netAmount": "price"}, inplace=True)
+        # Rename columns based on detected names
+        df.rename(columns={time_col: "time", price_col: "price"}, inplace=True)
 
         # Convert 'time' to datetime
-        df["time"] = pd.to_datetime(df["time"], format="%d/%m/%Y, %I:%M:%S %p")
+        df["time"] = pd.to_datetime(df["time"], errors='coerce')
+        df["price"] = pd.to_numeric(df["price"], errors='coerce').abs()
 
-        df["price"] = abs(df["price"])
+        # Remove duplicate times
+        df = df.drop_duplicates(subset=["time"])
 
-        # Store the processed DataFrame in the list
-        dataframes.append(df)
+        # Handling missing values - example of dropping them
+        df.dropna(subset=["time", "price"], inplace=True)
 
-    return dataframes
+        # Reassign cleaned dataframe back to dictionary
+        dataframesDict[key] = df[["time", "price"]].copy()
+
+    return dataframesDict
+
 
 
 def preparePortfolioFromDataFrames(Pf, dataframes):
@@ -668,8 +669,9 @@ def preparePortfolioFromDataFrames(Pf, dataframes):
     # Merge all DataFrames
     df = merge_dfs_on_time(dataframes)
 
-    # Retain only the longest continuous sequence of data points
-    df = retain_largest_continuous_sequence(df)
+    # # Retain only the longest continuous sequence of data points
+    # df = retain_largest_continuous_sequence(df)
+
     df.reset_index(inplace=True, drop=True)
 
     # Get a list of all columns that start with 'price_'
