@@ -929,7 +929,9 @@ def prepareDataFramesFromExcel(excel_file, sheet_names):
         df.rename(columns={time_col: "time", price_col: "price"}, inplace=True)
 
         # Convert 'time' to datetime
-        df["time"] = pd.to_datetime(df["time"], errors="coerce")
+        df["time"] = pd.to_datetime(
+            df["time"], format="%d/%m/%Y, %I:%M:%S %p", errors="coerce"
+        )
 
         df["price"] = pd.to_numeric(df["price"], errors="coerce").abs()
 
