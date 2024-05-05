@@ -1,12 +1,29 @@
 import pandas as pd
 import numpy as np
 import warnings
+import hashlib
+from functools import reduce
+from io import BytesIO, StringIO
+import plotly.express as px
+from copy import deepcopy
+import xlsxwriter
 
 
 class Unit:
+
     def __init__(
-        self, long, price, time, ATR, stopLossFactor, unitSize=1, secName="test"
+        self,
+        tradeID,
+        long,
+        price,
+        time,
+        ATR,
+        stopLossFactor,
+        unitSize,
+        lotSize=15,
+        secName="test",
     ):
+        self.tradeID = tradeID
         self.long = long
         self.price = price
         self.time = time
@@ -18,6 +35,8 @@ class Unit:
             else (price + self.stopLossFactor * ATR)
         )
         self.unitSize = unitSize
+        self.lotSize = lotSize
+        self.value = price * unitSize * lotSize
         self.secName = secName
 
     def isLong(self):
@@ -34,39 +53,50 @@ class Unit:
 
 
 class Security:
+
     def __init__(
         self,
         Pf,
         initialData,
-        lotSize=None,
         name="test",
-        maxUnits=4,
+        lotSize=None,
+        maxUnits=None,
         ATRAverageRange=None,
         stopLossFactor=None,
+        transCost=None,
+        slippagePerContract=None,
     ):
 
         self.Pf = Pf
         self.histData = initialData
-        self.lotSize = self.Pf.lotSize if lotSize is None else lotSize
         self.name = name
-        self.longPositions = []
-        self.shortPositions = []
-        self.maxUnits = self.Pf.maxUnits if maxUnits is None else maxUnits
-        self.profit = 0
 
+        self.lotSize = self.Pf.lotSize if lotSize is None else lotSize
+        self.maxUnits = self.Pf.maxUnits if maxUnits is None else maxUnits
         self.ATRAverageRange = (
             self.Pf.ATRAverageRange if ATRAverageRange is None else ATRAverageRange
         )
+        self.stopLossFactor = (
+            self.Pf.stopLossFactor if stopLossFactor is None else stopLossFactor
+        )
+        self.transCost = self.Pf.transCost if transCost is None else transCost
+        self.slippagePerContract = (
+            self.Pf.slippagePerContract
+            if slippagePerContract is None
+            else slippagePerContract
+        )
+
+        self.longPositions = []
+        self.shortPositions = []
+
+        self.equity = 0
+
         self.ATR = self.computeInitialATRs()
         self.unitSize = 0
         self.updateUnitSize()
 
         self.longEntryATR = 0
         self.shortEntryATR = 0
-
-        self.stopLossFactor = (
-            self.Pf.stopLossFactor if stopLossFactor is None else stopLossFactor
-        )
 
     def computeInitialATRs(self):
         histPriceData = self.histData["price"].values
@@ -98,13 +128,12 @@ class Security:
             / (self.ATR * self.lotSize)
         )
 
-    def priceToRupees(self, price, unitSize=None):
-        unitSize = self.unitSize if unitSize is None else unitSize
+    def priceTotal(self, price, unitSize):
         return price * unitSize * self.lotSize
 
-    def goLong(self, price, time):
-        self.profit -= self.priceToRupees(price)
+    def goLong(self, price, time, tradeID):
         newLongUnit = Unit(
+            tradeID=tradeID,
             long=True,
             price=price,
             time=time,
@@ -112,12 +141,16 @@ class Security:
             unitSize=self.unitSize,
             secName=self.name,
             stopLossFactor=self.stopLossFactor,
+            lotSize=self.lotSize,
         )
         self.longPositions.append(newLongUnit)
+        buyAmount = newLongUnit.value
+        self.equity -= buyAmount
+        return buyAmount
 
-    def goShort(self, price, time):
-        self.profit += self.priceToRupees(price)
+    def goShort(self, price, time, tradeID):
         newShortUnit = Unit(
+            tradeID=tradeID,
             long=False,
             price=price,
             time=time,
@@ -125,24 +158,59 @@ class Security:
             unitSize=self.unitSize,
             secName=self.name,
             stopLossFactor=self.stopLossFactor,
+            lotSize=self.lotSize,
         )
         self.shortPositions.append(newShortUnit)
+        sellAmount = newShortUnit.value
+        self.equity += sellAmount
+        return sellAmount
+
+    def getPopStats(self, sellPrice, buyPrice, unitSize):
+        buyValue = buyPrice * unitSize * self.lotSize
+        sellValue = sellPrice * unitSize * self.lotSize
+        grossProfit = sellValue - buyValue
+        slippageCost = 2 * self.slippagePerContract * self.lotSize * unitSize
+        sellTransCost = (
+            self.transCost
+            * (sellPrice - self.slippagePerContract)
+            * self.lotSize
+            * unitSize
+        )
+        buyTransCost = (
+            self.transCost
+            * (buyPrice + self.slippagePerContract)
+            * self.lotSize
+            * unitSize
+        )
+        transCost = sellTransCost + buyTransCost
+        # below method is equivalent but above three lines are more obvious
+        # transCost = self.transCost * (sellPrice + buyPrice) * self.lotSize * unitSize
+        netProfit = sellValue - buyValue - slippageCost - transCost
+        return grossProfit, slippageCost, transCost, netProfit
 
     def popLongUnit(self, currPrice, index):
         unit = self.longPositions.pop(index)
-        sellAmount = self.priceToRupees(currPrice, unit.unitSize)
-        self.profit += sellAmount
-        buyAmount = self.priceToRupees(unit.price, unit.unitSize)
-        netProfitFromUnit = sellAmount - buyAmount
-        return netProfitFromUnit, sellAmount, unit.time
+        sellAmount = self.priceTotal(currPrice, unit.unitSize)
+        self.equity += sellAmount
+        return (
+            unit,
+            sellAmount,
+            *self.getPopStats(
+                sellPrice=currPrice, buyPrice=unit.price, unitSize=unit.unitSize
+            ),
+        )
 
     def popShortUnit(self, currPrice, index):
         unit = self.shortPositions.pop(index)
-        buyAmount = self.priceToRupees(currPrice, unit.unitSize)
-        self.profit -= buyAmount
-        sellAmount = self.priceToRupees(unit.price, unit.unitSize)
-        netProfitFromUnit = sellAmount - buyAmount
-        return netProfitFromUnit, buyAmount, unit.time
+        buyAmount = self.priceTotal(currPrice, unit.unitSize)
+        self.equity -= buyAmount
+        return (
+            unit,
+            buyAmount,
+            *self.getPopStats(
+                sellPrice=unit.price, buyPrice=currPrice, unitSize=unit.unitSize
+            ),
+        )
 
     def isLongEntered(self):
         return len(self.longPositions) > 0
@@ -185,59 +253,50 @@ class Security:
 
 
 class Portfolio:
+
     def __init__(
         self,
         securities=None,
+        lotSize=15,
+        transCost=0.001,
+        slippagePerContract=0.5,
+        longAtHigh=False,
         longBreakout=20,
         shortBreakout=20,
-        longAtHigh=True,
-        addExtraUnits="New",
+        ATRAverageRange=20,
+        addExtraUnits="As new unit",
         extraUnitATRFactor=0.5,
         useStops=True,
         stopLossFactor=2,
         adjustStopsOnMoreUnits=True,
         exitType="Timed",
-        exitLongBreakout=80,
-        exitShortBreakout=80,
-        notionalAccountSize=100000,
+        exitLongBreakout=5,
+        exitShortBreakout=5,
+        notionalAccountSize=1000000,
         riskPercentOfAccount=1,
         maxPositionLimitEachWay=12,
-        ATRAverageRange=20,
         maxUnits=4,
-        lotSize=15,
     ):
 
         # list of securities in this portfolio
         self.securities = [] if securities is None else securities
 
+        # lot sizes of securities in portfolio, can be overidden by individual securities (one lot contains lotSize contracts)
         self.lotSize = lotSize
 
-        # size of notional account in rupees
-        self.notionalAccountSize = notionalAccountSize
+        # transaction cost per rupee of value traded
+        self.transCost = transCost
 
-        # amount of risk (in percentage points of account size) willing to tolerate per trade per "day"
-        # i.e. when using units, 1 ATR movement of price should
-        # represent riskPercentOfAccount * accountSize equity movement
-        self.riskPercentOfAccount = riskPercentOfAccount
+        # slippage cost per contract traded (one lot contains lotSize contracts)
+        self.slippagePerContract = slippagePerContract
 
-        # total number of long / short positions (each) allowed
-        self.maxPositionLimitEachWay = maxPositionLimitEachWay
-
-        # max number of units allowed per security
-        self.maxUnits = maxUnits
+        # parameters for entry strategy
+        self.longAtHigh = longAtHigh
+        self.longBreakout = longBreakout
+        self.shortBreakout = shortBreakout
 
         # how long should the averaging period for ATR be
         self.ATRAverageRange = ATRAverageRange
-
-        # parameters for entry strategy
-        self.longBreakout = longBreakout
-        self.shortBreakout = shortBreakout
-        self.longAtHigh = longAtHigh
-
-        # minimum length of initial data
-        self.minLengthOfInitialData = (
-            max(ATRAverageRange, longBreakout, shortBreakout) + 1
-        )
 
         # parameters for adding more units after already entered
         self.addExtraUnits = addExtraUnits
@@ -257,17 +316,45 @@ class Portfolio:
             seconds=self.exitShortBreakout
         )
 
+        # size of notional account in rupees
+        self.notionalAccountSize = notionalAccountSize
+
+        # amount of risk (in percentage points of account size) willing to tolerate per trade per "day"
+        # i.e. when using units, 1 ATR movement of price should
+        # represent riskPercentOfAccount * accountSize equity movement
+        self.riskPercentOfAccount = riskPercentOfAccount
+
+        # total number of long / short positions (each) allowed
+        self.maxPositionLimitEachWay = maxPositionLimitEachWay
+
+        # max number of units allowed per security
+        self.maxUnits = maxUnits
+
+        # minimum length of initial data
+        self.minLengthOfInitialData = (
+            max(ATRAverageRange, longBreakout, shortBreakout) + 1
+        )
+
         # counter variables to keep track of number of active long and short positions
         self.numLongPositions = 0
         self.numShortPositions = 0
 
-        # start with zero equity
+        # start with zero gross equity
         self.equity = 0
 
-        self.totalLong = 0
-        self.totalShort = 0
+        # real equity takes into account slippage and transaction costs
+        self.netEquity = 0
 
-        columns = [
+        # start with 0 running total profit
+        self.grossProfit = 0
+        self.netProfit = 0
+
+        self.totalSlippageCost = 0
+        self.totalTransactionCost = 0
+        self.averageNetProfit = 0
+        self.averageGrossProfit = 0
+
+        tradeHistoryColumns = [
             "Time",
             "Action",
             "Long / Short",
@@ -281,8 +368,25 @@ class Portfolio:
             "Unit Size",
             "Lot Size",
         ]
+        self.tradeHistory = pd.DataFrame(columns=tradeHistoryColumns)
 
-        self.tradeHistory = pd.DataFrame(columns=columns)
+        tradeBookColumns = [
+            "Entry Time",
+            "Exit Time",
+            "Exit Type",
+            "Security",
+            "Long / Short",
+            "Entry Price",
+            "Exit Price",
+            "Position Size",
+            "Gross Profit",
+            "Slippage Cost",
+            "Transaction Cost",
+            "Net Profit",
+            "ATR at Entry",
+            "ATR at Exit",
+        ]
+        self.tradeBook = pd.DataFrame(columns=tradeBookColumns)
 
     # def addSecurity(self, sec): # this is clashing with the function below TBD
     #     self.securities.append(sec)
@@ -295,6 +399,8 @@ class Portfolio:
         maxUnits=None,
         ATRAverageRange=None,
         stopLossFactor=None,
+        transCost=None,
+        slippagePerContract=None,
     ):
         sec = Security(
             Pf=self,
@@ -304,6 +410,8 @@ class Portfolio:
             maxUnits=maxUnits,
             ATRAverageRange=ATRAverageRange,
             stopLossFactor=stopLossFactor,
+            transCost=transCost,
+            slippagePerContract=slippagePerContract,
         )
         self.securities.append(sec)
 
@@ -311,13 +419,26 @@ class Portfolio:
         # TBD
         pass
 
+    def generateTradeID(self, timestamp, instrument):
+        # Create a unique string from timestamp and instrument
+        unique_string = f"{timestamp}_{instrument}"
+
+        # Use hashlib to create a hash of the unique string
+        hash_object = hashlib.md5(unique_string.encode())  # Using MD5
+        tradeID = (
+            hash_object.hexdigest()
+        )  # Converts the hash object to a hexadecimal string
+
+        return tradeID
+
     def goLong(self, sec, price, time):
-        sec.goLong(price, time)
+        tradeID = self.generateTradeID(time, sec.name)
+        buyAmount = sec.goLong(price, time, tradeID)
         self.numLongPositions += 1
-        self.equity -= sec.priceToRupees(price)
+        self.equity -= buyAmount
 
         # Create a new DataFrame row with NA entries
-        newRow = {
+        newHistRow = {
             "Time": time,
             "Action": "Enter",
             "Long / Short": "Long",
@@ -325,24 +446,29 @@ class Portfolio:
             "Price": price,
             "Unit Size": sec.unitSize,
             "Lot Size": sec.lotSize,
-            "Equity change": -sec.priceToRupees(price),
+            "Equity change": -buyAmount,
             "Equity": self.equity,
             "Status of sec": sec.getQuickSummary(),
         }
+        appendToDataFrame(self.tradeHistory, newHistRow)
 
-        # Suppress the warning
-        warnings.filterwarnings(
-            "ignore",
-            message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.",
-        )
-        self.tradeHistory.loc[len(self.tradeHistory.index)] = newRow
+        newBookRow = {
+            "Entry Time": time,
+            "Security": sec.name,
+            "Long / Short": "Long",
+            "Entry Price": price,
+            "Position Size": sec.unitSize,
+            "ATR at Entry": sec.ATR,
+        }
+        appendToDataFrame(self.tradeBook, newBookRow, tradeID)
 
     def goShort(self, sec, price, time):
-        sec.goShort(price, time)
+        tradeID = self.generateTradeID(time, sec.name)
+        sellAmount = sec.goShort(price, time, tradeID)
         self.numShortPositions += 1
-        self.equity += sec.priceToRupees(price)
+        self.equity += sellAmount
 
-        newRow = {
+        newHistRow = {
             "Time": time,
             "Action": "Enter",
             "Long / Short": "Short",
@@ -350,23 +476,31 @@ class Portfolio:
             "Price": price,
             "Unit Size": sec.unitSize,
             "Lot Size": sec.lotSize,
-            "Equity change": sec.priceToRupees(price),
+            "Equity change": sellAmount,
             "Equity": self.equity,
             "Status of sec": sec.getQuickSummary(),
+            "Profit from trade": np.nan,
+            "Entered at": np.nan,
         }
+        appendToDataFrame(self.tradeHistory, newHistRow)
 
-        # Suppress the warning
-        warnings.filterwarnings(
-            "ignore",
-            message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.",
-        )
-        self.tradeHistory.loc[len(self.tradeHistory.index)] = newRow
+        newBookRow = {
+            "Entry Time": time,
+            "Security": sec.name,
+            "Long / Short": "Short",
+            "Entry Price": price,
+            "Position Size": sec.unitSize,
+            "ATR at Entry": sec.ATR,
+        }
+        appendToDataFrame(self.tradeBook, newBookRow, tradeID)
 
     def popLong(self, sec, price, time, index):
-        profit, sellAmount, entryTime = sec.popLongUnit(price, index)
+        unit, sellAmount, grossProfit, slippageCost, transCost, netProfit = (
+            sec.popLongUnit(price, index)
+        )
         self.numLongPositions -= 1
         self.equity += sellAmount
-        newRow = {
+        newHistRow = {
             "Time": time,
             "Action": "Exit",
             "Long / Short": "Long",
@@ -375,18 +509,44 @@ class Portfolio:
             "Unit Size": sec.unitSize,
             "Lot Size": sec.lotSize,
             "Equity change": sellAmount,
-            "Entered at": entryTime,
-            "Profit from trade": profit,
+            "Entered at": unit.time,
+            "Profit from trade": grossProfit,
             "Equity": self.equity,
             "Status of sec": sec.getQuickSummary(),
         }
-        self.tradeHistory.loc[len(self.tradeHistory)] = newRow
+        appendToDataFrame(self.tradeHistory, newHistRow)
+
+        columns_to_update = [
+            "Exit Time",
+            "Exit Type",
+            "Exit Price",
+            "Gross Profit",
+            "Slippage Cost",
+            "Transaction Cost",
+            "Net Profit",
+            "ATR at Exit",
+        ]
+        values_to_update = [
+            time,
+            "Timed",
+            price,
+            grossProfit,
+            slippageCost,
+            transCost,
+            netProfit,
+            sec.ATR,
+        ]
+        updateRowOfDataFrame(
+            self.tradeBook, unit.tradeID, values_to_update, columns_to_update
+        )
 
     def popShort(self, sec, price, time, index):
-        profit, buyAmount, entryTime = sec.popShortUnit(price, index)
+        unit, buyAmount, grossProfit, slippageCost, transCost, netProfit = (
+            sec.popShortUnit(price, index)
+        )
         self.numShortPositions -= 1
         self.equity -= buyAmount
-        newRow = {
+        newHistRow = {
             "Time": time,
             "Action": "Exit",
             "Long / Short": "Short",
@@ -395,20 +555,56 @@ class Portfolio:
             "Unit Size": sec.unitSize,
             "Lot Size": sec.lotSize,
             "Equity change": -buyAmount,
-            "Entered at": entryTime,
-            "Profit from trade": profit,
+            "Entered at": unit.time,
+            "Profit from trade": grossProfit,
             "Equity": self.equity,
             "Status of sec": sec.getQuickSummary(),
         }
-        self.tradeHistory.loc[len(self.tradeHistory)] = newRow
+        appendToDataFrame(self.tradeHistory, newHistRow)
 
-    def exitAllLong(self, sec, currPrice, time):
+        columns_to_update = [
+            "Exit Time",
+            "Exit Type",
+            "Exit Price",
+            "Gross Profit",
+            "Slippage Cost",
+            "Transaction Cost",
+            "Net Profit",
+            "ATR at Exit",
+        ]
+        values_to_update = [
+            time,
+            "Timed",
+            price,
+            grossProfit,
+            slippageCost,
+            transCost,
+            netProfit,
+            sec.ATR,
+        ]
+        updateRowOfDataFrame(
+            self.tradeBook, unit.tradeID, values_to_update, columns_to_update
+        )
+
+    def exitAllLongSec(self, sec, currPrice, time):
         while sec.longPositions:
             self.popLong(sec, currPrice, time, -1)
 
-    def exitAllShort(self, sec, currPrice, time):
+    def exitAllShortSec(self, sec, currPrice, time):
         while sec.shortPositions:
             self.popShort(sec, currPrice, time, -1)
+
+    def exitAllLong(self, currPriceList, time):
+        for sec, currPrice in zip(self.securities, currPriceList):
+            self.exitAllLongSec(sec, currPrice, time)
+
+    def exitAllShort(self, currPriceList, time):
+        for sec, currPrice in zip(self.securities, currPriceList):
+            self.exitAllShortSec(sec, currPrice, time)
+
+    def exitAll(self, currPriceList, time):
+        self.exitAllLong(currPriceList, time)
+        self.exitAllShort(currPriceList, time)
 
     def isLongLoaded(self):
         return self.numLongPositions >= self.maxPositionLimitEachWay
@@ -429,32 +625,36 @@ class Portfolio:
             sec.histData.loc[len(sec.histData)] = [timeStamp, currPrice]
 
     def checkToAddNewUnit(self, sec, currPrice, time, mode):
-        histPriceData = sec.histData["price"]
+
+        breakout_length = getattr(self, mode + "Breakout")
+        breakout_seconds = pd.Timedelta(seconds=breakout_length)
+        recentData = sec.histData[sec.histData["time"] >= time - breakout_seconds]
+        if len(recentData) < breakout_length:
+            prevHigh = np.nan
+            prevLow = np.nan
+        else:
+            prevHigh = recentData["price"].max()
+            prevLow = recentData["price"].min()
+
         if mode == "long":
-            breakout = self.longBreakout
             priceCondition = (
-                "currPrice > prevHigh" if self.longAtHigh else "currPrice < prevLow"
+                currPrice > prevHigh if self.longAtHigh else currPrice < prevLow
             )
             entryATR = "longEntryATR"
             tradingFunction = self.goLong
         elif mode == "short":
-            breakout = self.shortBreakout
             priceCondition = (
-                "currPrice < prevLow" if self.longAtHigh else "currPrice > prevHigh"
+                currPrice < prevLow if self.longAtHigh else currPrice > prevHigh
             )
             entryATR = "shortEntryATR"
             tradingFunction = self.goShort
-        else:
-            raise RuntimeError("Invalid mode in tryToAddNewUnit.")
 
-        prevHigh = histPriceData[-breakout:].max()
-        prevLow = histPriceData[-breakout:].min()
-
-        if eval(priceCondition):
+        if priceCondition:
             sec.updateUnitSize()
             setattr(sec, entryATR, sec.ATR)
             tradingFunction(sec, currPrice, time)
             return True
+
         return False
 
     def checkToAddMoreUnits(self, sec, currPrice, time, mode):
@@ -535,6 +735,7 @@ class Portfolio:
                     self.tradeHistory.loc[self.tradeHistory.index[-1], "Action"] = (
                         "Stop out"
                     )
+                    self.tradeBook.loc[unit.tradeID, "Exit Type"] = "Stop out"
                     numStoppedOut += 1
 
         return numStoppedOut
@@ -592,31 +793,113 @@ class Portfolio:
 
         return numExits
 
-    def run_simulation(self, priceData, progress_callback=None):
-        Pf = self
+    def preparePortfolioFromDataFrames(self, dataframesDict):
+        dataframesDict = deepcopy(dataframesDict)
 
+        # Function to merge DataFrames on 'time'
+        def merge_dfs_on_time(df_list):
+            # Use functools.reduce to perform cumulative inner merge
+            merged_df = reduce(
+                lambda left, right: pd.merge(left, right, on="time", how="inner"),
+                df_list,
+            )
+            merged_df.reset_index(drop=True, inplace=True)
+            return merged_df
+
+        # Preparing each DataFrame by renaming the 'price' column to a unique name
+        for i, df in enumerate(dataframesDict.values()):
+            df.rename(columns={"price": f"price_{i + 1}"}, inplace=True)
+
+        # Merge all DataFrames
+        df = merge_dfs_on_time(list(dataframesDict.values()))
+
+        # # Retain only the longest continuous sequence of data points
+        # df = retain_largest_continuous_sequence(df)
+
+        df.reset_index(inplace=True, drop=True)
+
+        # Get a list of all columns that start with 'price_'
+        price_columns = [col for col in df.columns if col.startswith("price_")]
+
+        for col, secName in zip(price_columns, dataframesDict.keys()):
+            initialData = df.loc[: self.minLengthOfInitialData, ["time", col]].copy()
+            initialData.rename(columns={col: "price"}, inplace=True)
+            self.addSecurity(initialData=initialData, name=secName)
+
+        df = df.loc[self.minLengthOfInitialData :].copy()
+        df.reset_index(inplace=True, drop=True)
+
+        self.priceData = df
+
+    def run_simulation(self, progress_callback=None):
+        # Cache the locations of price columns once, outside of the loop
         price_column_numbers = [
-            priceData.columns.get_loc(col)
-            for col in priceData.columns
-            if col.startswith("price_")
+            self.priceData.columns.get_loc(col)
+            for col in self.priceData.columns
+            if col.startswith("price")
         ]
 
-        total_rows = len(priceData.index)
-        for rowNo in range(total_rows):
-            row = priceData.iloc[rowNo]
+        def get_time_and_prices(row):
+            # Extract time and prices from a given row
             time = row["time"]
-            prices = [row.iloc[colNo] for colNo in price_column_numbers]
-            Pf.updateATRs(prices)
-            Pf.updateUnitSizes()
-            Pf.checkStops(prices, time)
-            Pf.checkExits(prices, time)
-            Pf.checkEntries(prices, time)
-            Pf.updateHistData(prices, time)
+            prices = [row.iloc[col] for col in price_column_numbers]
+            return time, prices
 
-            # Update progress bar
+        total_rows = len(self.priceData.index)
+        for rowNo in range(total_rows):
+            row = self.priceData.iloc[rowNo]
+            time, prices = get_time_and_prices(row)
+            self.updateATRs(prices)
+            self.updateUnitSizes()
+            self.checkStops(prices, time)
+            self.checkExits(prices, time)
+            self.checkEntries(prices, time)
+            self.updateHistData(prices, time)
+
+            # Update progress bar if a callback is provided
             if progress_callback:
-                progress_percentage = (rowNo + 1) / total_rows
-                progress_callback(progress_percentage)
+                progress_callback((rowNo + 1) / total_rows)
+
+        # Handle final row
+        final_row = self.priceData.iloc[-1]
+        time, prices = get_time_and_prices(final_row)
+        self.exitAll(prices, time)
+        self.processTradeBook()
+
+    def processTradeBook(self):
+        self.tradeBook["Running net profit"] = self.tradeBook["Net Profit"].cumsum()
+        self.netProfit = self.tradeBook["Net Profit"].sum()
+        self.grossProfit = self.tradeBook["Gross Profit"].sum()
+        self.totalSlippageCost = self.tradeBook["Slippage Cost"].sum()
+        self.totalTransactionCost = self.tradeBook["Transaction Cost"].sum()
+        self.averageNetProfit = self.tradeBook["Net Profit"].mean()
+        self.averageGrossProfit = self.tradeBook["Gross Profit"].mean()
+
+    def getStats(self):
+        # tradeBookColumns = [
+        #     "Entry time",
+        #     "Exit time",
+        #     "Security",
+        #     "Long / Short",
+        #     "Entry Price",
+        #     "Exit Price",
+        #     "Position Size",
+        #     "Gross Profit",
+        #     "Slippage cost",
+        #     "Transaction cost",
+        #     "Net Profit",
+        # ]
+        stats = {
+            "Net Profit": self.netProfit,
+            "Gross Profit": self.grossProfit,
+            "Slippage Cost": self.totalSlippageCost,
+            "Transaction Cost": self.totalTransactionCost,
+            "Average Net Profit": self.averageNetProfit,
+            "Average Gross Profit": self.averageGrossProfit,
+        }
+
+        return stats
+
 
 def prepareDataFramesFromExcel(excel_file, sheet_names):
     # Retrieve a dictionary of dataframes, with sheet_name as key
@@ -625,19 +908,37 @@ def prepareDataFramesFromExcel(excel_file, sheet_names):
     # Process each sheet
     for key, df in dataframesDict.items():
         # Assuming columns are identified by names containing keywords
-        time_col = next(col for col in df.columns if "time" in col.lower())
-        price_col = next(col for col in df.columns 
-                         if "net" in col.lower() or "amount" in col.lower() or "price" in col.lower())
+        time_col = next((col for col in df.columns if "time" in col.lower()), None)
+        price_col = next(
+            (
+                col
+                for col in df.columns
+                if "net" in col.lower()
+                or "amount" in col.lower()
+                or "price" in col.lower()
+            ),
+            None,
+        )
+
+        if time_col is None:
+            raise RuntimeError("Could not identify time column in data")
+        if price_col is None:
+            raise RuntimeError("Could not identify price column in data")
 
         # Rename columns based on detected names
         df.rename(columns={time_col: "time", price_col: "price"}, inplace=True)
 
         # Convert 'time' to datetime
-        df["time"] = pd.to_datetime(df["time"], errors='coerce')
-        df["price"] = pd.to_numeric(df["price"], errors='coerce').abs()
+        df["time"] = pd.to_datetime(df["time"], errors="coerce")
+
+        df["price"] = pd.to_numeric(df["price"], errors="coerce").abs()
+
+        # # Retain only the longest continuous sequence of data points
+        # df = retain_largest_continuous_sequence(df)
+        # df.reset_index(inplace=True, drop=True)
 
         # Remove duplicate times
-        df = df.drop_duplicates(subset=["time"])
+        df.drop_duplicates(subset=["time"], inplace=True)
 
         # Handling missing values - example of dropping them
         df.dropna(subset=["time", "price"], inplace=True)
@@ -648,65 +949,293 @@ def prepareDataFramesFromExcel(excel_file, sheet_names):
     return dataframesDict
 
 
+def computeEdgeRatios(
+    dfDict,
+    timePeriodRangeStart=1,
+    timePeriodRangeEnd=50,
+    timePeriodStep=1,
+    longBreakout=20,
+    shortBreakout=20,
+    longAtHigh=False,
+    ATRAverageRange=20,
+    getPlots=False,
+):
 
-def preparePortfolioFromDataFrames(Pf, dataframes):
+    # ensure we do not alter the original passed dictionary of dataframes by using a deepcopy instead
+    dfDict = deepcopy(dfDict)
 
-    # Function to merge DataFrames on 'time'
-    def merge_dfs_on_time(df_list):
-        # Use functools.reduce to perform cumulative inner merge
-        from functools import reduce
+    def computeBreakoutsAndATRs(df):
+        df["price"] = abs(df["price"])
+        df["TR"] = abs(df["price"].diff())
+        df = df.drop(df.index[0])
+        df.reset_index(inplace=True, drop=True)
+        df.loc[ATRAverageRange, "ATR"] = df.loc[1:ATRAverageRange, "TR"].mean()
+        for i in range(ATRAverageRange + 1, len(df.index)):
+            df.loc[i, "ATR"] = (
+                (ATRAverageRange - 1) * df.loc[i - 1, "ATR"] + df.loc[i, "TR"]
+            ) / ATRAverageRange
 
-        merged_df = reduce(
-            lambda left, right: pd.merge(left, right, on="time", how="inner"), df_list
+        df["highs"] = (
+            df["price"]
+            .rolling(window=longBreakout, min_periods=longBreakout)
+            .max()
+            .shift(1)
         )
-        merged_df.reset_index(drop=True, inplace=True)
-        return merged_df
+        df["lows"] = (
+            df["price"]
+            .rolling(window=shortBreakout, min_periods=shortBreakout)
+            .min()
+            .shift(1)
+        )
 
-    # Preparing each DataFrame by renaming the 'price' column to a unique name
-    for i, df in enumerate(dataframes):
-        df.rename(columns={"price": f"price_{i + 1}"}, inplace=True)
+        if longAtHigh:
+            df["longEntry"] = df["price"] > df["highs"]
+            df["shortEntry"] = df["price"] < df["lows"]
+        else:
+            df["longEntry"] = df["price"] < df["lows"]
+            df["shortEntry"] = df["price"] > df["highs"]
 
-    # Merge all DataFrames
-    df = merge_dfs_on_time(dataframes)
+        return df
 
-    # # Retain only the longest continuous sequence of data points
-    # df = retain_largest_continuous_sequence(df)
+    timePeriods = list(
+        range(timePeriodRangeStart, timePeriodRangeEnd + 1, timePeriodStep)
+    )
+    numtimePeriods = len(timePeriods)
 
-    df.reset_index(inplace=True, drop=True)
+    def computeEdgeRatiosAndSumsForSec(df):
+        prices = df["price"].values
+        atrs = df["ATR"].values
+        long_entries = df["longEntry"].values
+        short_entries = df["shortEntry"].values
 
-    # Get a list of all columns that start with 'price_'
-    price_columns = [col for col in df.columns if col.startswith("price_")]
+        E_ratios = []
+        sumMFEs = []
+        sumMAEs = []
 
-    for i, col in enumerate(price_columns):
-        initialData = df.loc[: Pf.minLengthOfInitialData, ["time", col]].copy()
-        initialData.rename(columns={col: "price"}, inplace=True)
-        Pf.addSecurity(initialData=initialData, name=f"sec_{i}", lotSize=15)
+        for timePeriod in timePeriods:
+            # Rolling calculations
+            rolling_max = (
+                pd.Series(prices)
+                .rolling(window=timePeriod + 1)
+                .max()
+                .shift(-timePeriod)
+            )
+            rolling_min = (
+                pd.Series(prices)
+                .rolling(window=timePeriod + 1)
+                .min()
+                .shift(-timePeriod)
+            )
 
-    df = df.loc[Pf.minLengthOfInitialData :].copy()
-    df.reset_index(inplace=True, drop=True)
+            sumMFE, sumMAE, count = 0.0, 0.0, 0
 
-    return df
+            for i in range(len(df) - timePeriod):
+                if long_entries[i] or short_entries[i]:
+                    currPrice = prices[i]
+                    currATR = atrs[i]
+
+                    if long_entries[i]:
+                        MFE = rolling_max[i] - currPrice
+                        MAE = currPrice - rolling_min[i]
+                    elif short_entries[i]:
+                        MFE = currPrice - rolling_min[i]
+                        MAE = rolling_max[i] - currPrice
+
+                    norMFE = MFE / currATR
+                    norMAE = MAE / currATR
+                    sumMFE += norMFE
+                    sumMAE += norMAE
+                    count += 1
+
+            if count > 0:
+                # averageMFE = sumMFE / count
+                # averageMAE = sumMAE / count
+                sumMFEs.append(sumMFE)
+                sumMAEs.append(sumMAE)
+                if sumMAE == 0:
+                    E_ratio = np.inf
+                    if sumMFE == 0:
+                        E_ratio = np.nan
+                else:
+                    E_ratio = sumMFE / sumMAE
+                E_ratios.append(E_ratio)
+            else:
+                sumMFEs.append(np.nan)
+                sumMAEs.append(np.nan)
+                E_ratios.append(np.nan)
+
+        return sumMFEs, sumMAEs, E_ratios
+
+    # TBD can doing below using numpy
+    E_ratios = {}
+    allSecMFEs = [0] * numtimePeriods
+    allSecMAEs = [0] * numtimePeriods
+    for (
+        sec,
+        df,
+    ) in dfDict.items():
+        df = computeBreakoutsAndATRs(df)
+        sumMFEs, sumMAEs, E_ratios_sec = computeEdgeRatiosAndSumsForSec(df)
+        E_ratios[sec] = E_ratios_sec
+        allSecMFEs = [x + y for x, y in zip(allSecMFEs, sumMFEs)]
+        allSecMAEs = [x + y for x, y in zip(allSecMAEs, sumMAEs)]
+
+    if len(dfDict) != 1:
+        E_ratiosForAllSecs = [
+            MFE / MAE if MAE != 0 else float("nan")
+            for MFE, MAE in zip(allSecMFEs, allSecMAEs)
+        ]
+        E_ratios["all securities"] = E_ratiosForAllSecs
+
+    if getPlots:
+        E_ratios_dfs_figs = {}
+        for sec, ratios in E_ratios.items():
+            df = pd.DataFrame({"Time Period": timePeriods, "Edge Ratio": ratios})
+            fig = px.line(
+                df,
+                x="Time Period",
+                y="Edge Ratio",
+                title=f"Edge Ratios Over Time Periods for {sec}",
+                markers=True,  # This adds the dots on each line point
+            )
+            # Customizing hover data
+            fig.update_traces(
+                mode="markers+lines",  # Ensure both markers and lines are shown
+                hoverinfo="all",  # This ensures all relevant data shows on hover
+            )
+            E_ratios_dfs_figs[sec] = (df, fig)
+        return E_ratios_dfs_figs
+    else:
+        return E_ratios
 
 
-def retain_largest_continuous_sequence(df, time_column="time"):
-    df[time_column] = pd.to_datetime(
-        df[time_column]
-    )  # Convert to datetime if not already
-    df["time_diff"] = (
-        df[time_column].diff().dt.total_seconds().abs()
-    )  # Calculate time differences in seconds
+def dataframe_to_excel(df, file_name=None):
+    """
+    Converts a DataFrame to an Excel file, formatting columns appropriately.
+    If file_name is provided, writes the file locally. If file_name is None,
+    returns an in-memory file-like object containing the Excel data.
 
-    # Group by breaks in the 1-second sequence
-    df["group"] = (df["time_diff"] != 1).cumsum()
+    Args:
+        df (pandas.DataFrame): The DataFrame to convert.
+        file_name (str, optional): The file path where the Excel file will be saved.
+                                   If None, the function returns a BytesIO object.
 
-    # Identify the largest group with 1-second intervals
-    group_sizes = df.groupby("group").size()
-    largest_group = group_sizes.idxmax()
+    Returns:
+        io.BytesIO or None: Returns a BytesIO object if file_name is None,
+                            otherwise writes the file locally and returns None.
+    """
+    output = BytesIO() if file_name is None else file_name
 
-    # Filter the DataFrame to only include the largest continuous 1-second spaced group
-    df_filtered = df[(df["group"] == largest_group) & (df["time_diff"] == 1)].copy()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="Sheet1")
 
-    # Optionally, drop the helper columns
-    df_filtered.drop(["time_diff", "group"], axis=1, inplace=True)
+        workbook = writer.book
+        worksheet = writer.sheets["Sheet1"]
 
-    return df_filtered
+        # Format for floats to limit to two decimal places
+        float_format = workbook.add_format({"num_format": "0.00"})
+
+        # Adjust column widths and apply formatting
+        for idx, col in enumerate(df):
+            series = df[col]
+            if pd.api.types.is_float_dtype(series):
+                max_len = (
+                    max(
+                        series.map(lambda x: len(f"{x:.2f}")).max(),
+                        len(str(series.name)),
+                    )
+                    + 1
+                )
+                worksheet.set_column(idx, idx, max_len, float_format)
+            else:
+                max_len = (
+                    max(series.astype(str).map(len).max(), len(str(series.name))) + 1
+                )
+                worksheet.set_column(idx, idx, max_len)
+
+    if file_name is None:
+        output.seek(0)
+        return output
+
+
+def dataframe_to_csv(df):
+    """
+    Converts a DataFrame to a CSV format stored in memory.
+
+    Args:
+    df (pandas.DataFrame): The DataFrame to convert.
+
+    Returns:
+    io.StringIO: An in-memory file-like object containing the CSV data.
+    """
+    # Create a string buffer
+    output = StringIO()
+    df.to_csv(output, index=False)
+    # Rewind the buffer to the beginning after writing
+    output.seek(0)
+    return output
+
+
+def appendToDataFrame(df, row, index=None, ignore_index=True):
+    """
+    Appends a new row to the DataFrame.
+
+    Parameters:
+        df (pd.DataFrame): The DataFrame to which the row will be appended.
+        row (dict or pd.Series): The new row to append. Can be a dictionary or a pandas Series.
+        ignore_index (bool): Whether to ignore the index of the appended row. If True, the index is reset.
+
+    Returns:
+        pd.DataFrame: A new DataFrame with the appended row.
+    """
+    # # Check if the row is a dictionary and convert it to a DataFrame
+    # if isinstance(row, dict):
+    #     row_df = pd.DataFrame([row])
+    # elif isinstance(row, pd.Series):
+    #     row_df = pd.DataFrame([row.values], columns=row.index)
+    # else:
+    #     raise ValueError("Row must be a dict or pd.Series")
+
+    # # Concatenate the original DataFrame with the new row DataFrame
+    # return pd.concat([df, row_df], ignore_index=ignore_index)
+
+    if index is None:
+        index = len(df.index)
+
+    # Ignore a specific warning by message and category
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        # Only within this block, the specified warning will be ignored
+        df.loc[index] = row
+
+
+def updateRowOfDataFrame(df, index, values, columns):
+    # Ignore a specific warning by message and category
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        # Only within this block, the specified warning will be ignored
+        df.loc[index, columns] = values
+
+
+# def retain_largest_continuous_sequence(df, time_column="time"):
+#     df[time_column] = pd.to_datetime(
+#         df[time_column]
+#     )  # Convert to datetime if not already
+#     df["time_diff"] = (
+#         df[time_column].diff().dt.total_seconds().abs()
+#     )  # Calculate time differences in seconds
+
+#     # Group by breaks in the 1-second sequence
+#     df["group"] = (df["time_diff"] != 1).cumsum()
+
+#     # Identify the largest group with 1-second intervals
+#     group_sizes = df.groupby("group").size()
+#     largest_group = group_sizes.idxmax()
+
+#     # Filter the DataFrame to only include the largest continuous 1-second spaced group
+#     df_filtered = df[df["group"] == largest_group].copy()
+
+#     # Optionally, drop the helper columns
+#     df_filtered.drop(["time_diff", "group"], axis=1, inplace=True)
+
+#     return df_filtered
