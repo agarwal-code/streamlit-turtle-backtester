@@ -1,3 +1,11 @@
 streamlit
 pandas
 openpyxl
+plotly
+numpy
+warnings
+hashlib
+functools
+io
+copy
+xlsxwriter
