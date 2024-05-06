@@ -106,14 +106,12 @@ def main():
     lotSize = st.number_input(
         "Enter the lot size for securities being traded",
         min_value=1,
-        max_value=500,
         value=15,
     )
 
     transCostPerCrore = st.number_input(
         "Enter the transaction cost (in rupees) per crore of value traded",
         min_value=1.0,
-        max_value=10000000.0,
         value=10000.0,
     )
     transCost = transCostPerCrore / 10000000.0
@@ -138,19 +136,17 @@ def main():
     longBreakout = st.number_input(
         "Enter the number of seconds for long breakout",
         min_value=1,
-        max_value=10000000,
         value=20,
     )
 
     shortBreakout = st.number_input(
         "Enter the number of seconds for short breakout",
         min_value=1,
-        max_value=10000000,
         value=20,
     )
 
     ATRAverageRange = st.number_input(
-        "Enter the ATR average range", min_value=10, max_value=30, value=20
+        "Enter the ATR average range", min_value=2, value=20
     )
 
     with st.expander("Compute E-ratios", expanded=False):
@@ -245,13 +241,11 @@ def main():
     exitLongBreakout = st.number_input(
         exitBreakoutMessage.format("long"),
         min_value=1,
-        max_value=10000000,
         value=5,
     )
     exitShortBreakout = st.number_input(
         exitBreakoutMessage.format("short"),
         min_value=1,
-        max_value=10000000,
         value=5,
     )
 
@@ -268,7 +262,6 @@ def main():
     maxPositionLimitEachWay = st.number_input(
         "Enter the maximum long/short position limit",
         min_value=1,
-        max_value=500,
         value=12,
         help="e.g. If 12, then maximum 12 long positions are allowed in the portfolio, and maximum 12 short positions, for a total of 24.",
     )
@@ -276,7 +269,6 @@ def main():
     maxUnits = st.number_input(
         "Enter the maximum number of units of an individual security in the portfolio",
         min_value=1,
-        max_value=500,
         value=4,
         help="e.g. If 4, then maximum 4 positions can be held in a particular security.",
     )
