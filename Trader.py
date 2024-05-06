@@ -17,6 +17,7 @@ class Unit:
         long,
         price,
         time,
+        tickNum,
         ATR,
         stopLossFactor,
         unitSize,
@@ -27,6 +28,7 @@ class Unit:
         self.long = long
         self.price = price
         self.time = time
+        self.tickNum = tickNum
         self.ATR = ATR
         self.stopLossFactor = stopLossFactor
         self.stopPrice = (
@@ -131,12 +133,13 @@ class Security:
     def priceTotal(self, price, unitSize):
         return price * unitSize * self.lotSize
 
-    def goLong(self, price, time, tradeID):
+    def goLong(self, price, time, tradeID, tickNum):
         newLongUnit = Unit(
             tradeID=tradeID,
             long=True,
             price=price,
             time=time,
+            tickNum=tickNum,
             ATR=self.longEntryATR,
             unitSize=self.unitSize,
             secName=self.name,
@@ -148,12 +151,13 @@ class Security:
         self.equity -= buyAmount
         return buyAmount
 
-    def goShort(self, price, time, tradeID):
+    def goShort(self, price, time, tradeID, tickNum):
         newShortUnit = Unit(
             tradeID=tradeID,
             long=False,
             price=price,
             time=time,
+            tickNum=tickNum,
             ATR=self.shortEntryATR,
             unitSize=self.unitSize,
             secName=self.name,
@@ -431,9 +435,9 @@ class Portfolio:
 
         return tradeID
 
-    def goLong(self, sec, price, time):
+    def goLong(self, sec, price, time, tickNum):
         tradeID = self.generateTradeID(time, sec.name)
-        buyAmount = sec.goLong(price, time, tradeID)
+        buyAmount = sec.goLong(price, time, tradeID, tickNum)
         self.numLongPositions += 1
         self.equity -= buyAmount
 
@@ -462,9 +466,9 @@ class Portfolio:
         }
         appendToDataFrame(self.tradeBook, newBookRow, tradeID)
 
-    def goShort(self, sec, price, time):
+    def goShort(self, sec, price, time, tickNum):
         tradeID = self.generateTradeID(time, sec.name)
-        sellAmount = sec.goShort(price, time, tradeID)
+        sellAmount = sec.goShort(price, time, tradeID, tickNum)
         self.numShortPositions += 1
         self.equity += sellAmount
 
@@ -624,11 +628,12 @@ class Portfolio:
         for sec, currPrice in zip(self.securities, currPriceList):
             sec.histData.loc[len(sec.histData)] = [timeStamp, currPrice]
 
-    def checkToAddNewUnit(self, sec, currPrice, time, mode):
+    def checkToAddNewUnit(self, sec, currPrice, time, tickNum, mode):
 
         breakout_length = getattr(self, mode + "Breakout")
-        breakout_seconds = pd.Timedelta(seconds=breakout_length)
-        recentData = sec.histData[sec.histData["time"] >= time - breakout_seconds]
+        # breakout_seconds = pd.Timedelta(seconds=breakout_length)
+        # recentData = sec.histData[sec.histData["time"] >= time - breakout_seconds]
+        recentData = sec.histData.iloc[-breakout_length:]
         if len(recentData) < breakout_length:
             prevHigh = np.nan
             prevLow = np.nan
@@ -652,12 +657,12 @@ class Portfolio:
         if priceCondition:
             sec.updateUnitSize()
             setattr(sec, entryATR, sec.ATR)
-            tradingFunction(sec, currPrice, time)
+            tradingFunction(sec, currPrice, time, tickNum)
             return True
 
         return False
 
-    def checkToAddMoreUnits(self, sec, currPrice, time, mode):
+    def checkToAddMoreUnits(self, sec, currPrice, time, tickNum, mode):
         if mode == "long":
             latestUnit = sec.longPositions[-1]
             priceDifference = currPrice - latestUnit.price
@@ -679,12 +684,12 @@ class Portfolio:
             if self.adjustStopsOnMoreUnits:
                 for unit in positions:
                     unit.stopPrice += 0.5 + stopPriceAdjustment
-            tradingFunction(sec, currPrice, time)
+            tradingFunction(sec, currPrice, time, tickNum)
             return True
 
         return False
 
-    def addUnits(self, currPriceList, time, position_type):
+    def addUnits(self, currPriceList, time, tickNum, position_type):
         unitsAdded = 0
         Position_type = position_type.capitalize()
         if not getattr(self, f"is{Position_type}Loaded")():
@@ -693,16 +698,16 @@ class Portfolio:
                     currPrice = currPriceList[secNo]
                     if not getattr(sec, f"is{Position_type}Entered")():
                         unitsAdded += self.checkToAddNewUnit(
-                            sec, currPrice, time, position_type
+                            sec, currPrice, time, tickNum, position_type
                         )
                     else:
                         if self.addExtraUnits == "As new unit":
                             unitsAdded += self.checkToAddNewUnit(
-                                sec, currPrice, time, position_type
+                                sec, currPrice, time, tickNum, position_type
                             )
                         elif self.addExtraUnits == "Using ATR":
                             unitsAdded += self.checkToAddMoreUnits(
-                                sec, currPrice, time, position_type
+                                sec, currPrice, time, tickNum, position_type
                             )
                         elif self.addExtraUnits == "No":
                             pass
@@ -712,10 +717,10 @@ class Portfolio:
                             )
         return unitsAdded
 
-    def checkEntries(self, currPriceList, time):
+    def checkEntries(self, currPriceList, time, tickNum):
         unitsAdded = 0
-        unitsAdded += self.addUnits(currPriceList, time, "long")
-        unitsAdded += self.addUnits(currPriceList, time, "short")
+        unitsAdded += self.addUnits(currPriceList, time, tickNum, "long")
+        unitsAdded += self.addUnits(currPriceList, time, tickNum, "short")
         return unitsAdded
 
     def checkStopsByPositionType(self, currPriceList, time, positionType):
@@ -753,7 +758,7 @@ class Portfolio:
 
         return totalStoppedOut
 
-    def checkExits(self, currPriceList, time):
+    def checkExits(self, currPriceList, time, tickNum):
 
         numExits = 0
 
@@ -762,14 +767,12 @@ class Portfolio:
                 # can only check the first position each time because positions are stored
                 # in ascending order w.r.t. time
                 while sec.longPositions and (
-                    time - sec.longPositions[0].time
-                    >= self.exit_long_breakout_timedelta
+                    tickNum - sec.longPositions[0].tickNum >= self.exitLongBreakout
                 ):
                     self.popLong(sec, currPrice, time, 0)
                     numExits += 1
                 while sec.shortPositions and (
-                    time - sec.shortPositions[0].time
-                    >= self.exit_short_breakout_timedelta
+                    tickNum - sec.shortPositions[0].tickNum >= self.exitShortBreakout
                 ):
                     self.popShort(sec, currPrice, time, 0)
                     numExits += 1
@@ -852,8 +855,8 @@ class Portfolio:
             self.updateATRs(prices)
             self.updateUnitSizes()
             self.checkStops(prices, time)
-            self.checkExits(prices, time)
-            self.checkEntries(prices, time)
+            self.checkExits(currPriceList=prices, time=time, tickNum=rowNo)
+            self.checkEntries(currPriceList=prices, time=time, tickNum=rowNo)
             self.updateHistData(prices, time)
 
             # Update progress bar if a callback is provided
@@ -929,9 +932,12 @@ def prepareDataFramesFromExcel(excel_file, sheet_names):
         df.rename(columns={time_col: "time", price_col: "price"}, inplace=True)
 
         # Convert 'time' to datetime
-        df["time"] = pd.to_datetime(
-            df["time"], format="%d/%m/%Y, %I:%M:%S %p", errors="coerce"
-        )
+        try:
+            df["time"] = pd.to_datetime(
+                df["time"], format="%d/%m/%Y, %I:%M:%S %p", errors="raise"
+            )
+        except ValueError:
+            pass
 
         df["price"] = pd.to_numeric(df["price"], errors="coerce").abs()
 
@@ -945,7 +951,7 @@ def prepareDataFramesFromExcel(excel_file, sheet_names):
         # Handling missing values - example of dropping them
         df.dropna(subset=["time", "price"], inplace=True)
 
-        df.sort_values(by="time", ascending=True, inplace=True)
+        # df.sort_values(by="time", ascending=True, inplace=True)
 
         # Reassign cleaned dataframe back to dictionary
         dataframesDict[key] = df[["time", "price"]].copy()

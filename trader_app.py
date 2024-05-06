@@ -12,7 +12,7 @@ def main():
         st.markdown(
             """
         ## Upload your Excel file
-        Please upload an Excel file consisting of second-by-second price data for analysis. Ensure that the file format is correct.
+        Please upload an Excel file consisting of price data for analysis. Ensure that the time stamps are in ascending order, and that the format and time periods under consideration are consistent across sheets.
         """,
             unsafe_allow_html=True,
         )
@@ -134,13 +134,13 @@ def main():
         longAtHigh = False
 
     longBreakout = st.number_input(
-        "Enter the number of seconds for long breakout",
+        "Enter the number of ticks for long breakout",
         min_value=1,
         value=20,
     )
 
     shortBreakout = st.number_input(
-        "Enter the number of seconds for short breakout",
+        "Enter the number of ticks for short breakout",
         min_value=1,
         value=20,
     )
@@ -151,7 +151,7 @@ def main():
 
     with st.expander("Compute E-ratios", expanded=False):
         st.text(
-            "Select the range of time periods over which you would like to compute E-ratios"
+            "Select the range of time periods (in ticks) over which you would like to compute E-ratios"
         )
         timePeriodRangeStart = st.number_input(
             "Minimum time period",
@@ -230,13 +230,13 @@ def main():
     exitType = st.radio("Select type of exits to use", ("Timed", "Breakout"))
     if exitType == "Timed":
         exitBreakoutMessage = (
-            "Enter the number of seconds for exiting {} positions"
-            + "(e.g. if 30, positions will be exited 30 seconds after entry)"
+            "Enter the number of ticks for exiting {} positions"
+            + "(e.g. if 30, positions will be exited 30 ticks after entry)"
         )
     else:
         exitBreakoutMessage = (
             "Enter length of exit breakout for {0} positions"
-            + " (e.g. if 20, then {0} positions will be exited at a 20-second low)"
+            + " (e.g. if 20, then {0} positions will be exited at a 20-tick low)"
         )
     exitLongBreakout = st.number_input(
         exitBreakoutMessage.format("long"),
@@ -256,7 +256,7 @@ def main():
     riskPercentOfAccount = st.number_input(
         "Enter the risk percent of account",
         value=1.0,
-        help="Amount of risk (in percentage points of account size) willing to tolerate per trade per second; i.e., unit sizes are computed such that 1 ATR movement of price represents (riskPercentOfAccount * accountSize) equity movement.",
+        help="Amount of risk (in percentage points of account size) willing to tolerate per trade per tick; i.e., unit sizes are computed such that 1 ATR movement of price represents (riskPercentOfAccount * accountSize) equity movement.",
     )
 
     maxPositionLimitEachWay = st.number_input(
@@ -344,7 +344,7 @@ def main():
             "Trade simulation completed.  \n"  # Note the two spaces before \n
         )
         for key, value in st.session_state.Pf.getStats().items():
-            success_message += f"Total {key} is {value:,}.  \n"  # Two spaces before \n
+            success_message += f"{key} is {value:,}.  \n"  # Two spaces before \n
         st.markdown(success_message)
 
         st.download_button(
