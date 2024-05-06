@@ -146,7 +146,9 @@ def main():
     )
 
     ATRAverageRange = st.number_input(
-        "Enter the ATR average range", min_value=2, value=20
+        "Enter the ATR average range (number in the denominator in the ATR calculation)",
+        min_value=2,
+        value=20,
     )
 
     with st.expander("Compute E-ratios", expanded=False):
