@@ -273,6 +273,7 @@ class Portfolio:
         useStops=True,
         stopLossFactor=2,
         adjustStopsOnMoreUnits=True,
+        adjustStopATRFactor=0.5,
         exitType="Timed",
         exitLongBreakout=5,
         exitShortBreakout=5,
@@ -310,6 +311,7 @@ class Portfolio:
         self.useStops = useStops
         self.stopLossFactor = stopLossFactor
         self.adjustStopsOnMoreUnits = adjustStopsOnMoreUnits
+        self.adjustStopATRFactor = adjustStopATRFactor
 
         # parameters for exit strategy
         self.exitType = exitType
@@ -532,7 +534,7 @@ class Portfolio:
         ]
         values_to_update = [
             time,
-            "Timed",
+            self.exitType,
             price,
             grossProfit,
             slippageCost,
@@ -578,7 +580,7 @@ class Portfolio:
         ]
         values_to_update = [
             time,
-            "Timed",
+            self.exitType,
             price,
             grossProfit,
             slippageCost,
@@ -668,14 +670,14 @@ class Portfolio:
             priceDifference = currPrice - latestUnit.price
             entryATR = sec.longEntryATR
             positions = sec.longPositions
-            stopPriceAdjustment = 0.5 * sec.longEntryATR
+            stopPriceAdjustment = self.adjustStopATRFactor * entryATR
             tradingFunction = self.goLong
         elif mode == "short":
             latestUnit = sec.shortPositions[-1]
             priceDifference = latestUnit.price - currPrice
             entryATR = sec.shortEntryATR
             positions = sec.shortPositions
-            stopPriceAdjustment = -0.5 * sec.shortEntryATR
+            stopPriceAdjustment = -self.adjustStopATRFactor * entryATR
             tradingFunction = self.goShort
         else:
             raise RuntimeError("Invalid mode in tryToAddMoreUnits.")
@@ -683,7 +685,7 @@ class Portfolio:
         if priceDifference >= self.extraUnitATRFactor * entryATR:
             if self.adjustStopsOnMoreUnits:
                 for unit in positions:
-                    unit.stopPrice += 0.5 + stopPriceAdjustment
+                    unit.stopPrice += stopPriceAdjustment
             tradingFunction(sec, currPrice, time, tickNum)
             return True
 
@@ -783,12 +785,12 @@ class Portfolio:
                     prevLow = histPriceData[-self.exitLongBreakout :].min()
                     if currPrice < prevLow:
                         numExits = sec.getNumTotalPositions()
-                        self.exitAllLong(sec, currPrice, time)
+                        self.exitAllLongSec(sec, currPrice, time)
                 if sec.isShortEntered():
                     prevHigh = histPriceData[-self.exitLongBreakout :].max()
                     if currPrice > prevHigh:
                         numExits = sec.getNumTotalPositions()
-                        self.exitAllShort(sec, currPrice, time)
+                        self.exitAllShortSec(sec, currPrice, time)
         else:
             raise RuntimeError(
                 "Portfolio attribute exitType is neither Timed nor Breakout."

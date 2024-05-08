@@ -197,6 +197,7 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
                 st.dataframe(df)
 
+    extraUnitATRFactor = 10000
     addExtraUnits = st.checkbox(
         "Add additional units for a security when a position is already entered",
         value=False,
@@ -205,29 +206,43 @@ def main():
         with st.expander("Additional unit settings", expanded=True):
             unit_options = {
                 "Same rules as those for new units (breakout)": "As new unit",
-                "Using 1/2 ATR based stops": "Using ATR",
+                "Using ATR based breakouts": "Using ATR",
             }
             addExtraUnits = st.radio(
                 "What rules would you like to use to add these additional units?",
                 list(unit_options.keys()),
             )
             addExtraUnits = unit_options[addExtraUnits]
+            if addExtraUnits == "Using ATR":
+                extraUnitATRFactor = st.number_input(
+                    "Enter the factor by which ATR is multiplied to set extra unit breakouts",
+                    value=0.5,
+                    help="If this is 0.5, then an additional long unit is entered when price is 0.5 * (entry ATR) higher than the original entry price",
+                )
     else:
         addExtraUnits = "No"
 
+    stopLossFactor = 2
+    adjustStopATRFactor = 0
     useStops = st.checkbox("Use stop losses", value=False)
     if useStops:
         with st.expander("Stop Loss Settings", expanded=True):
             stopLossFactor = st.number_input(
                 "Enter the stop loss factor",
                 value=2.0,
-                help="e.g. if this is 2, then the stop will be set at 2*ATR from the entry price",
+                help="If this is 2, then the stop will be set at 2*ATR from the entry price",
             )
             adjustStopsOnMoreUnits = st.checkbox(
                 "Adjust stops when more units are added",
-                value=True,
+                value=False,
                 help="To minimize risk, will for example increase stops for previous long positions if more long positions are entered",
             )
+            if adjustStopsOnMoreUnits:
+                adjustStopATRFactor = st.number_input(
+                    "Enter the factor by which ATR is multiplied to adjust previous stops",
+                    value=0.5,
+                    help="If this is 0.5, then previous stop price for an entered short unit will be decreased by 0.5*(Entry ATR) for every additional short unit entered",
+                )
 
     exitType = st.radio("Select type of exits to use", ("Timed", "Breakout"))
     if exitType == "Timed":
@@ -303,10 +318,11 @@ def main():
             shortBreakout=shortBreakout,
             ATRAverageRange=ATRAverageRange,
             addExtraUnits=addExtraUnits,
-            extraUnitATRFactor=(0.5 if addExtraUnits == "Using ATR" else 0),
+            extraUnitATRFactor=extraUnitATRFactor,
             useStops=useStops,
-            stopLossFactor=stopLossFactor if useStops else 2,
+            stopLossFactor=stopLossFactor,
             adjustStopsOnMoreUnits=adjustStopsOnMoreUnits if useStops else None,
+            adjustStopATRFactor=adjustStopATRFactor,
             exitType=exitType,
             exitLongBreakout=exitLongBreakout,
             exitShortBreakout=exitShortBreakout,
@@ -315,29 +331,27 @@ def main():
             maxPositionLimitEachWay=maxPositionLimitEachWay,
             maxUnits=maxUnits,
         )
-
+        print(vars(Pf))
         Pf.preparePortfolioFromDataFrames(st.session_state.dataframesDict)
 
-        try:
-            progress_bar = st.progress(0)
-            Pf.run_simulation(
-                progress_callback=lambda x: progress_bar.progress(x * 0.9)
-            )
-            st.session_state.Pf = Pf
-            st.session_state.tradeBook_excel = Trader.dataframe_to_excel(Pf.tradeBook)
-            st.session_state.tradeBook_csv = Trader.dataframe_to_csv(Pf.tradeBook)
-            progress_bar.progress(1.0)
-            st.session_state.run_complete = True
-        # except Exception as e:
-        #     # Log the error message or handle it as needed
-        #     print(f"Failed to process data due to an error: {e}")
-        finally:
-            sim_message_placeholder.empty()
-            # progress_bar.empty()  # Optionally clear the progress bar after completion
+        # try:
+        progress_bar = st.progress(0)
+        Pf.run_simulation(progress_callback=lambda x: progress_bar.progress(x * 0.9))
+        st.session_state.Pf = Pf
+        st.session_state.tradeBook_excel = Trader.dataframe_to_excel(Pf.tradeBook)
+        st.session_state.tradeBook_csv = Trader.dataframe_to_csv(Pf.tradeBook)
+        progress_bar.progress(1.0)
+        st.session_state.run_complete = True
+        sim_message_placeholder.empty()
+        progress_bar.empty()
 
-            # this ensures the Simulate Trades button is renenabled immediately
-            st.session_state["simulating"] = False
-            st.rerun()
+        # this ensures the Simulate Trades button is renenabled immediately
+        st.session_state["simulating"] = False
+        st.rerun()
+        # # except Exception as e:
+        # #     # Log the error message or handle it as needed
+        # #     print(f"Failed to process data due to an error: {e}")
+        # finally:
 
     if st.session_state.get("run_complete", False) and not st.session_state.get(
         "simulating", False
