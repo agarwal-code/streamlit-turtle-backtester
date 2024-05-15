@@ -88,6 +88,12 @@ class Security:
             else slippagePerContract
         )
 
+        self.EMA_length_larger = self.Pf.EMA_length_larger
+        self.EMA_length_smaller = self.Pf.EMA_length_smaller
+        self.signal_EMA_length = self.Pf.signal_EMA_length
+        self.smoothing = self.Pf.smoothing
+        self.computeInitialMACD()  # specify the attributes it initializes and computes here TBD
+
         self.longPositions = []
         self.shortPositions = []
 
@@ -120,15 +126,90 @@ class Security:
             ((self.ATRAverageRange - 1) * self.ATR) + trueRange
         ) / self.ATRAverageRange
 
-    def updateHistData(self, currPrice, timeStamp):
-        self.histData.loc[len(self.histData)] = [timeStamp, currPrice]
-
     def updateUnitSize(self):
         # compute Unit Sizes (i.e., number of contracts in one unit); truncate to ensure integer number
         self.unitSize = int(
             (self.Pf.riskPercentOfAccount / 100 * self.Pf.notionalAccountSize)
             / (self.ATR * self.lotSize)
         )
+
+    def updateEMA(self, EMA, length, smoothing, price):
+        multiplier = smoothing / (length + 1)
+        EMA = price * multiplier + (1 - multiplier) * EMA
+        return EMA
+
+    def computeInitialEMAs(self, length):
+        priceData = self.histData["price"]
+        self.histData.loc[length - 1, str(length) + "-EMA"] = priceData[:length].mean()
+        for i in range(length, len(self.histData.index)):
+            self.histData.loc[i, str(length) + "-EMA"] = self.updateEMA(
+                EMA=self.histData.loc[i - 1, str(length) + "-EMA"],
+                length=length,
+                smoothing=self.smoothing,
+                price=self.histData.loc[i, "price"],
+            )
+
+    def computeInitialMACD(self):
+        self.computeInitialEMAs(self.EMA_length_smaller)
+        self.computeInitialEMAs(self.EMA_length_larger)
+
+        self.histData["MACD"] = (
+            self.histData[str(self.EMA_length_smaller) + "-EMA"]
+            - self.histData[str(self.EMA_length_larger) + "-EMA"]
+        )
+
+        self.histData.loc[
+            (self.EMA_length_larger - 1) + (self.signal_EMA_length - 1), "Signal"
+        ] = self.histData.loc[
+            (self.EMA_length_larger - 1) : (self.EMA_length_larger - 1)
+            + self.signal_EMA_length,
+            "MACD",
+        ].mean()
+        for i in range(
+            (self.EMA_length_larger - 1) + self.signal_EMA_length,
+            len(self.histData.index),
+        ):
+            self.histData.loc[i, "Signal"] = self.updateEMA(
+                EMA=self.histData.loc[i - 1, "Signal"],
+                length=self.signal_EMA_length,
+                smoothing=self.smoothing,
+                price=self.histData.loc[i - 1, "MACD"],
+            )
+
+        self.EMA_larger = self.histData[str(self.EMA_length_larger) + "-EMA"].iloc[-1]
+        self.EMA_smaller = self.histData[str(self.EMA_length_smaller) + "-EMA"].iloc[-1]
+        self.MACD = self.histData["MACD"].iloc[-1]
+        self.signal = self.histData["Signal"].iloc[-1]
+
+    def updateMACD(self, currPrice):
+        self.EMA_larger = self.updateEMA(
+            EMA=self.EMA_larger,
+            length=self.EMA_length_larger,
+            smoothing=self.smoothing,
+            price=currPrice,
+        )
+        self.EMA_smaller = self.updateEMA(
+            EMA=self.EMA_smaller,
+            length=self.EMA_length_smaller,
+            smoothing=self.smoothing,
+            price=currPrice,
+        )
+        self.MACD = self.EMA_smaller - self.EMA_larger
+        self.signal = self.updateEMA(
+            EMA=self.signal,
+            length=self.signal_EMA_length,
+            smoothing=self.smoothing,
+            price=self.MACD,
+        )
+        lastRowIndex = len(self.histData.index) - 1
+        self.histData.loc[lastRowIndex, str(self.EMA_length_larger) + "-EMA"] = (
+            self.EMA_larger
+        )
+        self.histData.loc[lastRowIndex, str(self.EMA_length_smaller) + "-EMA"] = (
+            self.EMA_smaller
+        )
+        self.histData.loc[lastRowIndex, "MACD"] = self.MACD
+        self.histData.loc[lastRowIndex, "Signal"] = self.signal
 
     def priceTotal(self, price, unitSize):
         return price * unitSize * self.lotSize
@@ -264,9 +345,14 @@ class Portfolio:
         lotSize=15,
         transCost=0.001,
         slippagePerContract=0.5,
+        entryType="Breakout",
         longAtHigh=False,
         longBreakout=20,
         shortBreakout=20,
+        EMA_length_larger=26,
+        EMA_length_smaller=12,
+        smoothing=2,
+        signal_EMA_length=9,
         ATRAverageRange=20,
         addExtraUnits="As new unit",
         extraUnitATRFactor=0.5,
@@ -296,9 +382,16 @@ class Portfolio:
         self.slippagePerContract = slippagePerContract
 
         # parameters for entry strategy
+        self.entryType = entryType
         self.longAtHigh = longAtHigh
+        # breakout parameters
         self.longBreakout = longBreakout
         self.shortBreakout = shortBreakout
+        # MACD parameters
+        self.EMA_length_larger = EMA_length_larger
+        self.EMA_length_smaller = EMA_length_smaller
+        self.smoothing = smoothing
+        self.signal_EMA_length = signal_EMA_length
 
         # how long should the averaging period for ATR be
         self.ATRAverageRange = ATRAverageRange
@@ -338,7 +431,13 @@ class Portfolio:
 
         # minimum length of initial data
         self.minLengthOfInitialData = (
-            max(ATRAverageRange, longBreakout, shortBreakout) + 1
+            max(
+                ATRAverageRange,
+                longBreakout,
+                shortBreakout,
+                EMA_length_larger + EMA_length_smaller,
+            )
+            + 1
         )
 
         # counter variables to keep track of number of active long and short positions
@@ -622,39 +721,74 @@ class Portfolio:
         for sec, currPrice in zip(self.securities, currPriceList):
             sec.updateATR(currPrice)
 
+    def updateMACD(self, currPriceList):
+        for sec, currPrice in zip(self.securities, currPriceList):
+            sec.updateMACD(currPrice)
+
     def updateUnitSizes(self):
         for sec in self.securities:
             sec.updateUnitSize()
 
     def updateHistData(self, currPriceList, timeStamp):
         for sec, currPrice in zip(self.securities, currPriceList):
-            sec.histData.loc[len(sec.histData)] = [timeStamp, currPrice]
+            newRow = {"time": timeStamp, "price": currPrice}
+            appendToDataFrame(df=sec.histData, row=newRow)
 
-    def checkToAddNewUnit(self, sec, currPrice, time, tickNum, mode):
-
-        breakout_length = getattr(self, mode + "Breakout")
-        # breakout_seconds = pd.Timedelta(seconds=breakout_length)
-        # recentData = sec.histData[sec.histData["time"] >= time - breakout_seconds]
-        recentData = sec.histData.iloc[-breakout_length:]
-        if len(recentData) < breakout_length:
-            prevHigh = np.nan
-            prevLow = np.nan
-        else:
-            prevHigh = recentData["price"].max()
-            prevLow = recentData["price"].min()
-
-        if mode == "long":
-            priceCondition = (
-                currPrice > prevHigh if self.longAtHigh else currPrice < prevLow
-            )
+    def checkToAddNewUnit(self, sec, currPrice, time, tickNum, type, entryType):
+        priceCondition = True
+        currMACD = sec.MACD
+        prevMACD = sec.histData["MACD"].iat[-2]
+        currSignal = sec.signal
+        prevSignal = sec.histData["Signal"].iat[-2]
+        if type == "long":
             entryATR = "longEntryATR"
             tradingFunction = self.goLong
-        elif mode == "short":
-            priceCondition = (
-                currPrice < prevLow if self.longAtHigh else currPrice > prevHigh
-            )
+        elif type == "short":
             entryATR = "shortEntryATR"
             tradingFunction = self.goShort
+
+        # Three different type of mutually exclusive entries
+        if "Breakout" in entryType:
+            breakout_length = getattr(self, type + "Breakout")
+            # breakout_seconds = pd.Timedelta(seconds=breakout_length)
+            # recentData = sec.histData[sec.histData["time"] >= time - breakout_seconds]
+            recentData = sec.histData.iloc[-breakout_length:]
+            if len(recentData) < breakout_length:
+                prevHigh = np.nan
+                prevLow = np.nan
+            else:
+                prevHigh = recentData["price"].max()
+                prevLow = recentData["price"].min()
+
+            if type == "long":
+                priceCondition = (
+                    currPrice > prevHigh if self.longAtHigh else currPrice < prevLow
+                )
+                if "MACD-Signal Condition" in type:
+                    priceCondition = priceCondition and (currMACD > currSignal)
+            elif type == "short":
+                priceCondition = (
+                    currPrice < prevLow if self.longAtHigh else currPrice > prevHigh
+                )
+                if "MACD-Signal Condition" in type:
+                    priceCondition = priceCondition and (currMACD < currSignal)
+        elif "MACD-Signal Crossover" in entryType:
+            if type == "long":
+                priceCondition = (currMACD > currSignal) and (prevMACD < prevSignal)
+            elif type == "short":
+                priceCondition = (currMACD < currSignal) and (prevMACD > prevSignal)
+        elif "MACD-Zero Crossover" in entryType:
+            if type == "long":
+                priceCondition = (currMACD > 0) and (prevMACD < 0)
+            elif type == "short":
+                priceCondition = (currMACD < 0) and (prevMACD > 0)
+
+        # Finally check the MACD sign condition
+        if "Polarity Condition" in entryType:
+            if type == "long":
+                priceCondition = priceCondition and (currMACD > 0)
+            elif type == "short":
+                priceCondition = (currMACD < currSignal) and (prevMACD > prevSignal)
 
         if priceCondition:
             sec.updateUnitSize()
@@ -664,15 +798,15 @@ class Portfolio:
 
         return False
 
-    def checkToAddMoreUnits(self, sec, currPrice, time, tickNum, mode):
-        if mode == "long":
+    def checkToAddMoreUnits(self, sec, currPrice, time, tickNum, type):
+        if type == "long":
             latestUnit = sec.longPositions[-1]
             priceDifference = currPrice - latestUnit.price
             entryATR = sec.longEntryATR
             positions = sec.longPositions
             stopPriceAdjustment = self.adjustStopATRFactor * entryATR
             tradingFunction = self.goLong
-        elif mode == "short":
+        elif type == "short":
             latestUnit = sec.shortPositions[-1]
             priceDifference = latestUnit.price - currPrice
             entryATR = sec.shortEntryATR
@@ -680,7 +814,7 @@ class Portfolio:
             stopPriceAdjustment = -self.adjustStopATRFactor * entryATR
             tradingFunction = self.goShort
         else:
-            raise RuntimeError("Invalid mode in tryToAddMoreUnits.")
+            raise RuntimeError("Invalid type in tryToAddMoreUnits.")
 
         if priceDifference >= self.extraUnitATRFactor * entryATR:
             if self.adjustStopsOnMoreUnits:
@@ -700,12 +834,22 @@ class Portfolio:
                     currPrice = currPriceList[secNo]
                     if not getattr(sec, f"is{Position_type}Entered")():
                         unitsAdded += self.checkToAddNewUnit(
-                            sec, currPrice, time, tickNum, position_type
+                            sec=sec,
+                            currPrice=currPrice,
+                            time=time,
+                            tickNum=tickNum,
+                            type=position_type,
+                            entryType=self.entryType,
                         )
                     else:
                         if self.addExtraUnits == "As new unit":
                             unitsAdded += self.checkToAddNewUnit(
-                                sec, currPrice, time, tickNum, position_type
+                                sec=sec,
+                                currPrice=currPrice,
+                                time=time,
+                                tickNum=tickNum,
+                                type=position_type,
+                                entryType=self.entryType,
                             )
                         elif self.addExtraUnits == "Using ATR":
                             unitsAdded += self.checkToAddMoreUnits(
@@ -798,7 +942,7 @@ class Portfolio:
 
         return numExits
 
-    def preparePortfolioFromDataFrames(self, dataframesDict):
+    def preparePortfolioFromDataFrames(self, dataframesDict, lotSizeDict=None):
         dataframesDict = deepcopy(dataframesDict)
 
         # Function to merge DataFrames on 'time'
@@ -827,11 +971,16 @@ class Portfolio:
         price_columns = [col for col in df.columns if col.startswith("price_")]
 
         for col, secName in zip(price_columns, dataframesDict.keys()):
-            initialData = df.loc[: self.minLengthOfInitialData, ["time", col]].copy()
+            initialData = df.iloc[: self.minLengthOfInitialData][["time", col]].copy()
             initialData.rename(columns={col: "price"}, inplace=True)
-            self.addSecurity(initialData=initialData, name=secName)
+            if lotSizeDict is None:
+                self.addSecurity(initialData=initialData, name=secName)
+            else:
+                self.addSecurity(
+                    initialData=initialData, name=secName, lotSize=lotSizeDict[secName]
+                )
 
-        df = df.loc[self.minLengthOfInitialData :].copy()
+        df = df.iloc[self.minLengthOfInitialData :].copy()
         df.reset_index(inplace=True, drop=True)
 
         self.priceData = df
@@ -855,6 +1004,7 @@ class Portfolio:
             row = self.priceData.iloc[rowNo]
             time, prices = get_time_and_prices(row)
             self.updateATRs(prices)
+            self.updateMACD(prices)
             self.updateUnitSizes()
             self.checkStops(prices, time)
             self.checkExits(currPriceList=prices, time=time, tickNum=rowNo)
@@ -1112,7 +1262,7 @@ def computeEdgeRatios(
             )
             # Customizing hover data
             fig.update_traces(
-                mode="markers+lines",  # Ensure both markers and lines are shown
+                modxyze="markers+lines",  # Ensure both markers and lines are shown
                 hoverinfo="all",  # This ensures all relevant data shows on hover
             )
             E_ratios_dfs_figs[sec] = (df, fig)

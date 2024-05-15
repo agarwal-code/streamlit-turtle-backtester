@@ -1,6 +1,8 @@
 # Testing files
-backTester.py
+test.py
+test.ipynb
 tradeBook.xslx
+output.png
 
 # MAC OS files
 .DS_Store

@@ -24,17 +24,31 @@ def main():
 
     # Download sample file button
     if not st.session_state.get("use_uploaded_file"):
-        with open("sample_data.xlsx", "rb") as file:
+        with open("Sample options data.xlsx", "rb") as file:
             st.download_button(
-                label="Download sample file",
+                label="Download sample options spread data file",
                 data=file,
-                file_name="sample_data.xlsx",
+                file_name="Sample options data.xlsx",
                 mime="application/octet-stream",
                 help="Download the sample Excel file to check, for example, the required format of the time column.",
             )
 
-        if st.button("Use sample data to proceed instead of uploading your own data"):
-            st.session_state.file = "sample_data.xlsx"
+        if st.button("Use sample options spread data to proceed"):
+            st.session_state.file = "Sample options data.xlsx"
+            st.session_state.use_sample_file = True
+            st.rerun()
+
+        with open("Sample stocks data (5 years).xlsx", "rb") as file:
+            st.download_button(
+                label="Download sample stocks data file",
+                data=file,
+                file_name="Sample stocks data (5 years).xlsx",
+                mime="application/octet-stream",
+                help="Download the sample Excel file to check, for example, the required format of the time column.",
+            )
+
+        if st.button("Use sample stocks data to proceed"):
+            st.session_state.file = "Sample stocks data (5 years).xlsx"
             st.session_state.use_sample_file = True
             st.rerun()
 
@@ -49,8 +63,32 @@ def main():
             "Select All Sheets", value=st.session_state.get("all_sheets_value", False)
         )
         selected_sheets = {
-            sheet: st.checkbox(sheet, value=all_sheets) for sheet in sheet_names
+            sheet: st.checkbox(sheet, value=all_sheets)
+            for sheet in sheet_names
+            if "lot" not in sheet.lower()
         }
+        lots_element = next(
+            (sheet for sheet in sheet_names if "lot" in sheet.lower()),
+            None,
+        )
+        if lots_element:
+            sheet_names.remove(lots_element)
+            lot_df = pd.read_excel(
+                st.session_state.file, sheet_name=lots_element, header=0
+            )
+            symbol_column = find_column(lot_df, ["symbol", "security", "name"])
+            lot_size_column = find_column(lot_df, ["lot"])
+            if symbol_column and lot_size_column:
+                # Create a dictionary with symbols as keys and lot sizes as values
+                st.session_state.lotSizeDict = dict(
+                    zip(lot_df[symbol_column], lot_df[lot_size_column])
+                )
+                st.session_state.lot_size_provided_in_excel_file = True
+            else:
+                st.error("Could not find the required columns in the uploaded file.")
+                st.stop()
+        else:
+            st.session_state.lot_size_provided_in_excel_file = False
 
         if st.button("Process data"):
             # Determine selected sheets or all sheets
@@ -61,28 +99,22 @@ def main():
                 # Process all sheets if "Select All" or no specific selection
                 sheets_to_process = sheet_names
 
-            # Attempt to process the selected sheets
-            try:
-                dataframesDict = Trader.prepareDataFramesFromExcel(
-                    st.session_state.file, sheets_to_process
-                )
-                if dataframesDict:
-                    st.session_state.dataframesDict = dataframesDict
-                    st.session_state.data_processed = True
-                else:
-                    # This condition could mean empty dataframes were returned
-                    st.error("No data processed. Check your file and selections.")
-            except Exception as e:
-                # Log the error message or handle it as needed
-                st.error(f"Failed to process data due to an error: {e}")
-                # Optionally, reset state if needed
-                # If you want to clear dataframes in case of error
-                st.session_state.dataframes = []
+            dataframesDict = Trader.prepareDataFramesFromExcel(
+                st.session_state.file, sheets_to_process
+            )
+            if dataframesDict:
+                st.session_state.dataframesDict = dataframesDict
+                st.session_state.data_processed = True
+            else:
+                # This condition could mean empty dataframes were returned
+                st.error("No data processed. Check your file and selections.")
+                st.stop()
 
     if st.session_state.get("data_processed", False):
         st.success(
-            f"Processed {len(st.session_state.dataframesDict)} sheets successfully! Ready for further action."
+            f"Processed {len(st.session_state.dataframesDict)} sheet(s) {'and lot sizes' if st.session_state.lot_size_provided_in_excel_file else ''} successfully! Ready for further action."
         )
+
         with st.expander("See graphs", expanded=False):
             for sec, df in st.session_state.dataframesDict.items():
                 fig = px.line(
@@ -100,14 +132,39 @@ def main():
                     hoverinfo="all",  # This ensures all relevant data shows on hover
                 )
                 st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.stop()
 
     st.header("Select trading parameters for portfolio.")
 
-    lotSize = st.number_input(
-        "Enter the lot size for securities being traded",
-        min_value=1,
-        value=15,
-    )
+    lotSize = 15
+    provide_lots_manually = st.checkbox("Provide lot sizes manually", value=False)
+    if (
+        not st.session_state.get("lots_provided_in_excel_file", True)
+        or provide_lots_manually
+    ):
+        lot_options = {
+            "Uniform lot size across securities": True,
+            "Different lot sizes for different securities": False,
+        }
+        uniform_lot = st.radio(
+            "Options for lot sizes", list(lot_options.keys()), index=0
+        )
+        uniform_lot = lot_options[uniform_lot]
+        if uniform_lot:
+            lotSize = st.number_input(
+                "Enter the lot size for securities being traded",
+                min_value=1,
+                value=15,
+            )
+        else:
+            st.session_state.lotSizeDict = {}
+            for secName in st.session_state.dataframesDict.keys():
+                st.session_state.lotSizeDict[secName] = st.number_input(
+                    f"Enter lot size for {secName}",
+                    min_value=1,
+                    value=250,
+                )
 
     transCostPerCrore = st.number_input(
         "Enter the transaction cost (in rupees) per crore of value traded",
@@ -123,79 +180,159 @@ def main():
         value=0.5,
     )
 
-    longAtHigh = st.radio(
-        "Trend following or Countertrend?",
-        ("Trend (Long at High)", "Countertrend (Long at Low)"),
-        index=1,
+    entryType = st.radio(
+        "Entry strategy",
+        (
+            "Breakout",
+            "Breakout + MACD-Signal Condition",
+            "Breakout + MACD-Signal Condition + MACD Polarity Condition",
+            "Breakout + MACD Polarity Condition",
+            "MACD-Signal Crossover",
+            "MACD-Signal Crossover + MACD Polarity Condition",
+            "MACD Zero Crossover (= EMA Crossover)",
+        ),
+        index=2,
+        help="1. Breakout: enters when highs or lows over a given time frame are exceeded.\n"
+        "2. MACD-Signal Condition: further require that MACD > / < Signal for entering long / short.\n"
+        "3. MACD Polarity Condition: further require MACD > / < 0 for entering long / short.\n"
+        "4. MACD-Signal Crossover: enter when MACD crosses the Signal line.\n"
+        "5. MACD Zero Crossover: enter when MACD crosses zero line, equivalent to EMA crossover.",
     )
-    if longAtHigh == "Trend (Long at High)":
-        longAtHigh = True
-    elif longAtHigh == "Countertrend (Long at Low)":
-        longAtHigh = False
 
-    longBreakout = st.number_input(
-        "Enter the number of ticks for long breakout",
-        min_value=1,
-        value=20,
-    )
+    longAtHigh = True
+    longBreakout = 20
+    shortBreakout = 20
+    if "Breakout" in entryType:
+        longAtHigh = st.radio(
+            "Action at breakouts",
+            ("Long at highs and short at lows", "Short at highs and go long at lows"),
+            index=1,
+        )
+        if "Long at highs" in longAtHigh:
+            longAtHigh = True
+        elif "Short at highs" in longAtHigh:
+            longAtHigh = False
 
-    shortBreakout = st.number_input(
-        "Enter the number of ticks for short breakout",
-        min_value=1,
-        value=20,
-    )
+        longBreakout = st.number_input(
+            "Enter the number of ticks for long breakout",
+            min_value=1,
+            value=20,
+        )
+
+        shortBreakout = st.number_input(
+            "Enter the number of ticks for short breakout",
+            min_value=1,
+            value=20,
+        )
+
+        with st.expander("Compute E-ratios for these breakouts", expanded=False):
+            st.text(
+                "Select the range of time periods (in ticks) over which you would like to compute E-ratios"
+            )
+            timePeriodRangeStart = st.number_input(
+                "Minimum time period",
+                min_value=1,
+                max_value=10000000,
+                value=1,
+            )
+            timePeriodRangeEnd = st.number_input(
+                "Maximum time period",
+                min_value=1,
+                max_value=10000000,
+                value=50,
+            )
+            timePeriodStep = st.number_input(
+                "Increment in time periods",
+                min_value=1,
+                max_value=10000000,
+                value=1,
+            )
+            compute_edges_button = st.button(
+                "Compute entry edge ratios",
+                help="Compute E-ratios for the chosen entry parameters, ATR averaging range, and time periods",
+            )
+            if compute_edges_button and st.session_state.get("data_processed", False):
+                st.session_state.E_ratios = Trader.computeEdgeRatios(
+                    st.session_state.dataframesDict,
+                    timePeriodRangeStart=timePeriodRangeStart,
+                    timePeriodRangeEnd=timePeriodRangeEnd,
+                    timePeriodStep=timePeriodStep,
+                    longBreakout=longBreakout,
+                    shortBreakout=shortBreakout,
+                    longAtHigh=longAtHigh,
+                    ATRAverageRange=ATRAverageRange,
+                    getPlots=True,
+                )
+                st.session_state.E_ratios_computed = True
+
+            if st.session_state.get("E_ratios_computed"):
+                for sec, df_fig in st.session_state.E_ratios.items():
+                    df, fig = df_fig
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.dataframe(df)
+
+    EMA_length_larger = 26
+    EMA_length_smaller = 12
+    smoothing = 2
+    signal_EMA_length = 9
+    if "MACD" in entryType:
+        st.markdown(
+            """
+        <u>Formulae used</u>
+
+        For Exponential Moving Average (EMA):
+        """,
+            unsafe_allow_html=True,
+        )
+        st.latex(
+            r"""
+            \begin{align*}
+            EMA_{\text{Current}} &=  
+            \text{Value}_{\text{Current Tick}} \cdot \left( \dfrac{ \text{Smoothing} }{ 1 + \text{Length} }\right)\\
+            & \hspace{.2in} + EMA_{\text{Previous Tick}} \cdot \left(1 - \left( \dfrac{ \text{Smoothing} }{ 1 + \text{Length} }\right) \right)\\
+            \end{align*}
+            """
+        )
+        st.markdown(
+            """ 
+        Smoothing factor = 2 by default, the larger this is the more the latest observation is weighter
+
+        MACD = (Shorter EMA) - (Longer EMA), default is 12-EMA - 26-EMA.
+
+        Signal = EMA of MACD, default is 9-EMA of MACD.
+        """
+        )
+        EMA_length_smaller = st.number_input(
+            "Enter the length for the shorter EMA",
+            min_value=1,
+            value=12,
+        )
+        EMA_length_larger = st.number_input(
+            "Enter the length for the longer EMA",
+            min_value=1,
+            value=26,
+        )
+        if EMA_length_larger <= EMA_length_smaller:
+            st.error(
+                "The length for the longer EMA must be greater than the length for the shorter EMA. Please adjust the values."
+            )
+            st.stop()  # Stop execution here if the condition is not met
+        smoothing = st.number_input(
+            "Enter the smoothing factor",
+            min_value=0,
+            value=2,
+        )
+        signal_EMA_length = st.number_input(
+            "Enter the length of the EMA used to compute Signal from MACD",
+            min_value=1,
+            value=9,
+        )
 
     ATRAverageRange = st.number_input(
         "Enter the ATR average range (number in the denominator in the ATR calculation)",
         min_value=2,
         value=20,
     )
-
-    with st.expander("Compute E-ratios", expanded=False):
-        st.text(
-            "Select the range of time periods (in ticks) over which you would like to compute E-ratios"
-        )
-        timePeriodRangeStart = st.number_input(
-            "Minimum time period",
-            min_value=1,
-            max_value=10000000,
-            value=1,
-        )
-        timePeriodRangeEnd = st.number_input(
-            "Maximum time period",
-            min_value=1,
-            max_value=10000000,
-            value=50,
-        )
-        timePeriodStep = st.number_input(
-            "Increment in time periods",
-            min_value=1,
-            max_value=10000000,
-            value=1,
-        )
-        compute_edges_button = st.button(
-            "Compute entry edge ratios",
-            help="Compute E-ratios for the chosen entry parameters, ATR averaging range, and time periods",
-        )
-        if compute_edges_button and st.session_state.get("data_processed", False):
-            st.session_state.E_ratios = Trader.computeEdgeRatios(
-                st.session_state.dataframesDict,
-                timePeriodRangeStart=timePeriodRangeStart,
-                timePeriodRangeEnd=timePeriodRangeEnd,
-                timePeriodStep=timePeriodStep,
-                longBreakout=longBreakout,
-                shortBreakout=shortBreakout,
-                longAtHigh=longAtHigh,
-                ATRAverageRange=ATRAverageRange,
-                getPlots=True,
-            )
-            st.session_state.E_ratios_computed = True
-
-        if st.session_state.get("E_ratios_computed"):
-            for sec, df_fig in st.session_state.E_ratios.items():
-                df, fig = df_fig
-                st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(df)
 
     extraUnitATRFactor = 10000
     addExtraUnits = st.checkbox(
@@ -248,7 +385,7 @@ def main():
     if exitType == "Timed":
         exitBreakoutMessage = (
             "Enter the number of ticks for exiting {} positions"
-            + "(e.g. if 30, positions will be exited 30 ticks after entry)"
+            + " (e.g. if 30, positions will be exited 30 ticks after entry)"
         )
     else:
         exitBreakoutMessage = (
@@ -313,9 +450,14 @@ def main():
             lotSize=lotSize,
             transCost=transCost,
             slippagePerContract=slippagePerContract,
+            entryType=entryType,
             longAtHigh=longAtHigh,
             longBreakout=longBreakout,
             shortBreakout=shortBreakout,
+            EMA_length_larger=EMA_length_larger,
+            EMA_length_smaller=EMA_length_smaller,
+            smoothing=smoothing,
+            signal_EMA_length=signal_EMA_length,
             ATRAverageRange=ATRAverageRange,
             addExtraUnits=addExtraUnits,
             extraUnitATRFactor=extraUnitATRFactor,
@@ -332,7 +474,11 @@ def main():
             maxUnits=maxUnits,
         )
         print(vars(Pf))
-        Pf.preparePortfolioFromDataFrames(st.session_state.dataframesDict)
+        print(st.session_state.get("lotSizeDict", None))
+        Pf.preparePortfolioFromDataFrames(
+            dataframesDict=st.session_state.dataframesDict,
+            lotSizeDict=st.session_state.get("lotSizeDict", None),
+        )
 
         # try:
         progress_bar = st.progress(0)
@@ -392,6 +538,14 @@ def main():
         # see_metrics = st.button("Compute performance metrics")
         # if see_metrics:
         #     st.text("Sorry this part of the simulator is not ready yet. Coming soon!")
+
+
+def find_column(df, keywords):
+    for keyword in keywords:
+        for column in df.columns:
+            if keyword.lower() in column.lower():
+                return column
+    return None
 
 
 if __name__ == "__main__":
