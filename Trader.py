@@ -786,9 +786,9 @@ class Portfolio:
         # Finally check the MACD sign condition
         if "Polarity Condition" in entryType:
             if type == "long":
-                priceCondition = priceCondition and (currMACD > 0)
+                priceCondition = priceCondition and (prevSignal < 0)
             elif type == "short":
-                priceCondition = (currMACD < currSignal) and (prevMACD > prevSignal)
+                priceCondition = priceCondition and (prevSignal > 0)
 
         if priceCondition:
             sec.updateUnitSize()

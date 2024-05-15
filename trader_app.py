@@ -185,16 +185,16 @@ def main():
         (
             "Breakout",
             "Breakout + MACD-Signal Condition",
-            "Breakout + MACD-Signal Condition + MACD Polarity Condition",
-            "Breakout + MACD Polarity Condition",
+            "Breakout + MACD-Signal Condition + Signal Polarity Condition",
+            "Breakout + Signal Polarity Condition",
             "MACD-Signal Crossover",
-            "MACD-Signal Crossover + MACD Polarity Condition",
+            "MACD-Signal Crossover + Signal Polarity Condition",
             "MACD Zero Crossover (= EMA Crossover)",
         ),
-        index=2,
+        index=5,
         help="1. Breakout: enters when highs or lows over a given time frame are exceeded.\n"
         "2. MACD-Signal Condition: further require that MACD > / < Signal for entering long / short.\n"
-        "3. MACD Polarity Condition: further require MACD > / < 0 for entering long / short.\n"
+        "3. Signal Polarity Condition: further require Signal > 0 for entering short and < 0 for entering long.\n"
         "4. MACD-Signal Crossover: enter when MACD crosses the Signal line.\n"
         "5. MACD Zero Crossover: enter when MACD crosses zero line, equivalent to EMA crossover.",
     )
