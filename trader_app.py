@@ -206,7 +206,7 @@ def main():
         longAtHigh = st.radio(
             "Action at breakouts",
             ("Long at highs and short at lows", "Short at highs and go long at lows"),
-            index=1,
+            index=0,
         )
         if "Long at highs" in longAtHigh:
             longAtHigh = True
@@ -295,7 +295,7 @@ def main():
         )
         st.markdown(
             """ 
-        Smoothing factor = 2 by default, the larger this is the more the latest observation is weighter
+        Smoothing factor = 2 by default, the larger this is the more the latest observation is weighted
 
         MACD = (Shorter EMA) - (Longer EMA), default is 12-EMA - 26-EMA.
 
