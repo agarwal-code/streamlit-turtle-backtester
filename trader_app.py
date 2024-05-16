@@ -57,7 +57,7 @@ def main():
         sheet_names = xls.sheet_names
         st.subheader("Select which sheets to process.")
         st.caption(
-            "Note: it is assumed that each sheet corresponds to a different strategy, please ensure this is the case."
+            "Note: it is assumed that each sheet corresponds to a different security, please ensure this is the case."
         )
         all_sheets = st.checkbox(
             "Select All Sheets", value=st.session_state.get("all_sheets_value", False)
@@ -83,12 +83,12 @@ def main():
                 st.session_state.lotSizeDict = dict(
                     zip(lot_df[symbol_column], lot_df[lot_size_column])
                 )
-                st.session_state.lot_size_provided_in_excel_file = True
+                st.session_state.lots_provided_in_excel_file = True
             else:
                 st.error("Could not find the required columns in the uploaded file.")
                 st.stop()
         else:
-            st.session_state.lot_size_provided_in_excel_file = False
+            st.session_state.lots_provided_in_excel_file = False
 
         if st.button("Process data"):
             # Determine selected sheets or all sheets
@@ -112,7 +112,7 @@ def main():
 
     if st.session_state.get("data_processed", False):
         st.success(
-            f"Processed {len(st.session_state.dataframesDict)} sheet(s) {'and lot sizes' if st.session_state.lot_size_provided_in_excel_file else ''} successfully! Ready for further action."
+            f"Processed {len(st.session_state.dataframesDict)} sheet(s) {'and lot sizes' if st.session_state.lots_provided_in_excel_file else ''} successfully! Ready for further action."
         )
 
         with st.expander("See graphs", expanded=False):
@@ -138,11 +138,11 @@ def main():
     st.header("Select trading parameters for portfolio.")
 
     lotSize = 15
-    provide_lots_manually = st.checkbox("Provide lot sizes manually", value=False)
-    if (
-        not st.session_state.get("lots_provided_in_excel_file", True)
-        or provide_lots_manually
-    ):
+    provide_lots_manually = st.checkbox(
+        "Provide lot sizes manually",
+        value=(not st.session_state.lots_provided_in_excel_file),
+    )
+    if provide_lots_manually:
         lot_options = {
             "Uniform lot size across securities": True,
             "Different lot sizes for different securities": False,
@@ -342,7 +342,7 @@ def main():
     if addExtraUnits:
         with st.expander("Additional unit settings", expanded=True):
             unit_options = {
-                "Same rules as those for new units (breakout)": "As new unit",
+                "Same rules as those for new units": "As new unit",
                 "Using ATR based breakouts": "Using ATR",
             }
             addExtraUnits = st.radio(
@@ -473,14 +473,13 @@ def main():
             maxPositionLimitEachWay=maxPositionLimitEachWay,
             maxUnits=maxUnits,
         )
-        print(vars(Pf))
-        print(st.session_state.get("lotSizeDict", None))
+        # print(vars(Pf))
+        # print(st.session_state.get("lotSizeDict", None))
         Pf.preparePortfolioFromDataFrames(
             dataframesDict=st.session_state.dataframesDict,
             lotSizeDict=st.session_state.get("lotSizeDict", None),
         )
 
-        # try:
         progress_bar = st.progress(0)
         Pf.run_simulation(progress_callback=lambda x: progress_bar.progress(x * 0.9))
         st.session_state.Pf = Pf
@@ -494,10 +493,6 @@ def main():
         # this ensures the Simulate Trades button is renenabled immediately
         st.session_state["simulating"] = False
         st.rerun()
-        # # except Exception as e:
-        # #     # Log the error message or handle it as needed
-        # #     print(f"Failed to process data due to an error: {e}")
-        # finally:
 
     if st.session_state.get("run_complete", False) and not st.session_state.get(
         "simulating", False
