@@ -157,6 +157,7 @@ def main():
                 min_value=1,
                 value=15,
             )
+            st.session_state.lotSizeDict = None
         else:
             st.session_state.lotSizeDict = {}
             for secName in st.session_state.dataframesDict.keys():
@@ -275,7 +276,7 @@ def main():
     EMA_length_smaller = 12
     smoothing = 2
     signal_EMA_length = 9
-    if "MACD" in entryType:
+    if "MACD" in entryType or "Signal" in entryType:
         st.markdown(
             """
         <u>Formulae used</u>
@@ -337,13 +338,13 @@ def main():
     extraUnitATRFactor = 10000
     addExtraUnits = st.checkbox(
         "Add additional units for a security when a position is already entered",
-        value=False,
+        value=True,
     )
     if addExtraUnits:
         with st.expander("Additional unit settings", expanded=True):
             unit_options = {
-                "Same rules as those for new units": "As new unit",
                 "Using ATR based breakouts": "Using ATR",
+                "Same rules as those for new units": "As new unit",
             }
             addExtraUnits = st.radio(
                 "What rules would you like to use to add these additional units?",
@@ -361,7 +362,7 @@ def main():
 
     stopLossFactor = 2
     adjustStopATRFactor = 0
-    useStops = st.checkbox("Use stop losses", value=False)
+    useStops = st.checkbox("Use stop losses", value=True)
     if useStops:
         with st.expander("Stop Loss Settings", expanded=True):
             stopLossFactor = st.number_input(
@@ -371,7 +372,7 @@ def main():
             )
             adjustStopsOnMoreUnits = st.checkbox(
                 "Adjust stops when more units are added",
-                value=False,
+                value=True,
                 help="To minimize risk, will for example increase stops for previous long positions if more long positions are entered",
             )
             if adjustStopsOnMoreUnits:
@@ -381,7 +382,7 @@ def main():
                     help="If this is 0.5, then previous stop price for an entered short unit will be decreased by 0.5*(Entry ATR) for every additional short unit entered",
                 )
 
-    exitType = st.radio("Select type of exits to use", ("Timed", "Breakout"))
+    exitType = st.radio("Select type of exits to use", ("Breakout", "Timed"))
     if exitType == "Timed":
         exitBreakoutMessage = (
             "Enter the number of ticks for exiting {} positions"
@@ -395,16 +396,20 @@ def main():
     exitLongBreakout = st.number_input(
         exitBreakoutMessage.format("long"),
         min_value=1,
-        value=5,
+        value=10,
     )
     exitShortBreakout = st.number_input(
         exitBreakoutMessage.format("short"),
         min_value=1,
-        value=5,
+        value=10,
     )
 
     notionalAccountSize = st.number_input(
         "Enter the notional account size", value=1000000.0
+    )
+    adjustNotionalAccountSize = st.checkbox(
+        "Readjust notional account size using total net profits after every trade",
+        value=True,
     )
 
     riskPercentOfAccount = st.number_input(
@@ -469,6 +474,7 @@ def main():
             exitLongBreakout=exitLongBreakout,
             exitShortBreakout=exitShortBreakout,
             notionalAccountSize=notionalAccountSize,
+            adjustNotionalAccountSize=adjustNotionalAccountSize,
             riskPercentOfAccount=riskPercentOfAccount,
             maxPositionLimitEachWay=maxPositionLimitEachWay,
             maxUnits=maxUnits,
@@ -483,8 +489,10 @@ def main():
         progress_bar = st.progress(0)
         Pf.run_simulation(progress_callback=lambda x: progress_bar.progress(x * 0.9))
         st.session_state.Pf = Pf
-        st.session_state.tradeBook_excel = Trader.dataframe_to_excel(Pf.tradeBook)
-        st.session_state.tradeBook_csv = Trader.dataframe_to_csv(Pf.tradeBook)
+        st.session_state.tradeBook_excel = Pf.getTradeBook(
+            format="excel", parameter_sheet=True
+        )
+        st.session_state.tradeBook_csv = Pf.getTradeBook(format="csv")
         progress_bar.progress(1.0)
         st.session_state.run_complete = True
         sim_message_placeholder.empty()
