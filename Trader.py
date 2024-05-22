@@ -132,6 +132,8 @@ class Security:
             (self.Pf.riskPercentOfAccount / 100 * self.Pf.notionalAccountSize)
             / (self.ATR * self.lotSize)
         )
+        if self.unitSize < 0:
+            self.unitSize = 0
 
     def updateEMA(self, EMA, length, smoothing, price):
         multiplier = smoothing / (length + 1)
@@ -364,6 +366,7 @@ class Portfolio:
         exitLongBreakout=5,
         exitShortBreakout=5,
         notionalAccountSize=1000000,
+        adjustNotionalAccountSize=True,
         riskPercentOfAccount=1,
         maxPositionLimitEachWay=12,
         maxUnits=4,
@@ -416,7 +419,10 @@ class Portfolio:
         )
 
         # size of notional account in rupees
+        self.startingNotionalAccountSize = notionalAccountSize
         self.notionalAccountSize = notionalAccountSize
+
+        self.adjustNotionalAccountSize = adjustNotionalAccountSize
 
         # amount of risk (in percentage points of account size) willing to tolerate per trade per "day"
         # i.e. when using units, 1 ATR movement of price should
@@ -452,7 +458,7 @@ class Portfolio:
 
         # start with 0 running total profit
         self.grossProfit = 0
-        self.netProfit = 0
+        self.totalNetProfits = 0
 
         self.totalSlippageCost = 0
         self.totalTransactionCost = 0
@@ -483,13 +489,17 @@ class Portfolio:
             "Long / Short",
             "Entry Price",
             "Exit Price",
+            "Stop Price",
             "Position Size",
+            "Lot Size",
             "Gross Profit",
             "Slippage Cost",
             "Transaction Cost",
             "Net Profit",
+            "Total Net Profits at Entry",
             "ATR at Entry",
             "ATR at Exit",
+            "Notional Account at Entry",
         ]
         self.tradeBook = pd.DataFrame(columns=tradeBookColumns)
 
@@ -519,10 +529,6 @@ class Portfolio:
             slippagePerContract=slippagePerContract,
         )
         self.securities.append(sec)
-
-    def adjustAccountSize(self):
-        # TBD
-        pass
 
     def generateTradeID(self, timestamp, instrument):
         # Create a unique string from timestamp and instrument
@@ -563,7 +569,10 @@ class Portfolio:
             "Long / Short": "Long",
             "Entry Price": price,
             "Position Size": sec.unitSize,
+            "Lot Size": sec.lotSize,
             "ATR at Entry": sec.ATR,
+            "Total Net Profits at Entry": self.totalNetProfits,
+            "Notional Account at Entry": self.notionalAccountSize,
         }
         appendToDataFrame(self.tradeBook, newBookRow, tradeID)
 
@@ -595,7 +604,10 @@ class Portfolio:
             "Long / Short": "Short",
             "Entry Price": price,
             "Position Size": sec.unitSize,
+            "Lot Size": sec.lotSize,
             "ATR at Entry": sec.ATR,
+            "Total Net Profits at Entry": self.totalNetProfits,
+            "Notional Account at Entry": self.notionalAccountSize,
         }
         appendToDataFrame(self.tradeBook, newBookRow, tradeID)
 
@@ -605,6 +617,7 @@ class Portfolio:
         )
         self.numLongPositions -= 1
         self.equity += sellAmount
+        self.totalNetProfits += netProfit
         newHistRow = {
             "Time": time,
             "Action": "Exit",
@@ -622,6 +635,7 @@ class Portfolio:
         appendToDataFrame(self.tradeHistory, newHistRow)
 
         columns_to_update = [
+            "Stop Price",
             "Exit Time",
             "Exit Type",
             "Exit Price",
@@ -632,6 +646,7 @@ class Portfolio:
             "ATR at Exit",
         ]
         values_to_update = [
+            unit.stopPrice,
             time,
             self.exitType,
             price,
@@ -644,6 +659,8 @@ class Portfolio:
         updateRowOfDataFrame(
             self.tradeBook, unit.tradeID, values_to_update, columns_to_update
         )
+        if self.adjustNotionalAccountSize:
+            self.notionalAccountSize += netProfit
 
     def popShort(self, sec, price, time, index):
         unit, buyAmount, grossProfit, slippageCost, transCost, netProfit = (
@@ -651,6 +668,7 @@ class Portfolio:
         )
         self.numShortPositions -= 1
         self.equity -= buyAmount
+        self.totalNetProfits += netProfit
         newHistRow = {
             "Time": time,
             "Action": "Exit",
@@ -668,6 +686,7 @@ class Portfolio:
         appendToDataFrame(self.tradeHistory, newHistRow)
 
         columns_to_update = [
+            "Stop Price",
             "Exit Time",
             "Exit Type",
             "Exit Price",
@@ -678,6 +697,7 @@ class Portfolio:
             "ATR at Exit",
         ]
         values_to_update = [
+            unit.stopPrice,
             time,
             self.exitType,
             price,
@@ -690,6 +710,8 @@ class Portfolio:
         updateRowOfDataFrame(
             self.tradeBook, unit.tradeID, values_to_update, columns_to_update
         )
+        if self.adjustNotionalAccountSize:
+            self.notionalAccountSize += netProfit
 
     def exitAllLongSec(self, sec, currPrice, time):
         while sec.longPositions:
@@ -879,8 +901,9 @@ class Portfolio:
 
         for secNo, sec in enumerate(self.securities):
             positions = getattr(sec, f"{positionType}Positions")
-            for unitNo, unit in enumerate(positions):
-                currPrice = currPriceList[secNo]
+            currPrice = currPriceList[secNo]
+            for unitNo in range(len(positions) - 1, -1, -1):
+                unit = positions[unitNo]
                 if eval(stopCondition):
                     popFunction(sec, currPrice, time, unitNo)
                     self.tradeHistory.loc[self.tradeHistory.index[-1], "Action"] = (
@@ -1022,13 +1045,16 @@ class Portfolio:
         self.processTradeBook()
 
     def processTradeBook(self):
-        self.tradeBook["Running net profit"] = self.tradeBook["Net Profit"].cumsum()
-        self.netProfit = self.tradeBook["Net Profit"].sum()
+        # self.tradeBook["Running Net Profit"] = self.tradeBook["Net Profit"].cumsum()
+        # self.totalNetProfits = self.tradeBook["Net Profit"].sum()
         self.grossProfit = self.tradeBook["Gross Profit"].sum()
         self.totalSlippageCost = self.tradeBook["Slippage Cost"].sum()
         self.totalTransactionCost = self.tradeBook["Transaction Cost"].sum()
         self.averageNetProfit = self.tradeBook["Net Profit"].mean()
         self.averageGrossProfit = self.tradeBook["Gross Profit"].mean()
+
+        if not self.useStops:
+            self.tradeBook.drop("Stop Price", axis=1, inplace=True)
 
     def getStats(self):
         # tradeBookColumns = [
@@ -1045,7 +1071,7 @@ class Portfolio:
         #     "Net Profit",
         # ]
         stats = {
-            "Net Profit": self.netProfit,
+            "Net Profit": self.totalNetProfits,
             "Gross Profit": self.grossProfit,
             "Slippage Cost": self.totalSlippageCost,
             "Transaction Cost": self.totalTransactionCost,
@@ -1054,6 +1080,83 @@ class Portfolio:
         }
 
         return stats
+
+    def getPortfolioParametersDict(self):
+        data_dict = {
+            "Transaction cost": self.transCost,
+            "Slippage per contract": self.slippagePerContract,
+            "Entry strategy": str(self.entryType),
+        }
+        if "Breakout" in self.entryType:
+            data_dict["Long at highs"] = self.longAtHigh
+            data_dict["Long breakout length"] = self.longBreakout
+            data_dict["Short breakout length"] = self.shortBreakout
+        if "MACD" in self.entryType or "Signal" in self.entryType:
+            data_dict["Longer EMA length"] = self.EMA_length_larger
+            data_dict["Shorter EMA length"] = self.EMA_length_smaller
+            data_dict["Smoothing factor"] = self.smoothing
+            data_dict["Signal EMA length"] = self.signal_EMA_length
+
+        # how long should the averaging period for ATR be
+        data_dict["ATR Average Range"] = self.ATRAverageRange
+
+        # parameters for adding more units after already entered
+        data_dict["Add extra units"] = self.addExtraUnits
+        data_dict["Extra unit ATR factor"] = self.extraUnitATRFactor
+
+        # parameters for setting stops
+        data_dict["Use stops"] = self.useStops
+        data_dict["Stop Loss ATR factor"] = self.stopLossFactor
+        data_dict["Adjust stops on adding additional units"] = (
+            self.adjustStopsOnMoreUnits
+        )
+        data_dict["Adjust stop ATR Factor"] = self.adjustStopATRFactor
+
+        # parameters for exit strategy
+        data_dict["Exit strategy"] = self.exitType
+        data_dict[f"Long exit {self.exitType}"] = self.exitLongBreakout
+        data_dict[f"Short exit {self.exitType}"] = self.exitShortBreakout
+
+        # size of notional account in rupees
+        data_dict["Starting notional Account Size"] = self.startingNotionalAccountSize
+
+        # amount of risk (in percentage points of account size) willing to tolerate per trade per "day"
+        # i.e. when using units, 1 ATR movement of price should
+        # represent riskPercentOfAccount * accountSize equity movement
+        data_dict["Risk per trade per tick as percent of account size"] = (
+            self.riskPercentOfAccount
+        )
+
+        # total number of long / short positions (each) allowed
+        data_dict["Max position limit each way"] = self.maxPositionLimitEachWay
+
+        # max number of units allowed per security
+        data_dict["Max units per security"] = self.maxUnits
+
+        return data_dict
+
+    def getTradeBook(self, format=None, parameter_sheet=False):
+        if format is None:
+            return self.tradeBook
+        elif format == "excel":
+            excel_io = dataframe_to_excel(self.tradeBook)
+
+            if parameter_sheet:
+
+                parameter_dict = self.getPortfolioParametersDict()
+
+                excel_io = add_sheet_from_dict(
+                    excel_io=excel_io,
+                    data_dict=parameter_dict,
+                    sheet_name="Parameters",
+                    col_names=["Parameter", "Value"],
+                )
+
+            return excel_io
+        elif format == "csv":
+            return dataframe_to_csv(self.tradeBook)
+        else:
+            raise RuntimeError("Invalid format provided")
 
 
 def prepareDataFramesFromExcel(excel_file, sheet_names):
@@ -1318,6 +1421,45 @@ def dataframe_to_excel(df, file_name=None):
     if file_name is None:
         output.seek(0)
         return output
+
+
+def add_sheet_from_dict(excel_io, data_dict, sheet_name, col_names):
+    # Read the existing content of the BytesIO object
+    excel_io.seek(0)  # Ensure we're at the beginning of the BytesIO object
+    with pd.ExcelFile(excel_io, engine="openpyxl") as reader:
+        existing_sheets = reader.sheet_names
+
+        with pd.ExcelWriter(
+            excel_io, engine="openpyxl", mode="a", if_sheet_exists="overlay"
+        ) as writer:
+            # Write each existing sheet back to the writer
+            for sheet in existing_sheets:
+                df = reader.parse(sheet)
+                if (
+                    sheet != sheet_name
+                ):  # Skip writing back the sheet if the name clashes
+                    df.to_excel(writer, sheet_name=sheet, index=False)
+
+            # Create a DataFrame from the dictionary
+            df_dict = pd.DataFrame(list(data_dict.items()), columns=list(col_names))
+
+            # Write the new DataFrame to the new sheet
+            if sheet_name in existing_sheets:
+                writer.remove(
+                    writer.sheets[sheet_name]
+                )  # Remove the existing sheet if it exists
+
+            df_dict.to_excel(writer, sheet_name=sheet_name, index=False)
+
+            # Adjust column widths
+            worksheet = writer.sheets[sheet_name]
+            for idx, col in enumerate(df_dict.columns):
+                max_len = max(df_dict[col].astype(str).map(len).max(), len(col)) + 1
+                worksheet.column_dimensions[chr(65 + idx)].width = max_len
+
+    # Reset the pointer of the BytesIO object
+    excel_io.seek(0)
+    return excel_io
 
 
 def dataframe_to_csv(df):
