@@ -432,6 +432,15 @@ def main():
         help="e.g. If 4, then maximum 4 positions can be held in a particular security.",
     )
 
+    marginFactor = st.number_input(
+        "Enter the percentage of nominal value trader required to be put up as margin",
+        min_value=0,
+        max_value=100,
+        value=25,
+        help="e.g. If 25, then 25% of value traded is put up as margin.",
+    )
+    marginFactor = marginFactor / 100
+
     simulate_button = st.button(
         "Simulate Trades", disabled=st.session_state.get("simulating", False)
     )
@@ -478,6 +487,7 @@ def main():
             riskPercentOfAccount=riskPercentOfAccount,
             maxPositionLimitEachWay=maxPositionLimitEachWay,
             maxUnits=maxUnits,
+            marginFactor=marginFactor,
         )
         # print(vars(Pf))
         # print(st.session_state.get("lotSizeDict", None))
@@ -509,7 +519,7 @@ def main():
             "Trade simulation completed.  \n"  # Note the two spaces before \n
         )
         for key, value in st.session_state.Pf.getStats().items():
-            success_message += f"{key} is {value:,.2f}.  \n"  # Two spaces before \n
+            success_message += f"{key} is {value}.  \n"  # Two spaces before \n
         st.markdown(success_message)
 
         st.download_button(
