@@ -31,11 +31,12 @@ class Unit:
         self.tickNum = tickNum
         self.ATR = ATR
         self.stopLossFactor = stopLossFactor
-        self.stopPrice = (
+        self.originalStopPrice = (
             (price - self.stopLossFactor * ATR)
             if long
             else (price + self.stopLossFactor * ATR)
         )
+        self.stopPrice = self.originalStopPrice
         self.unitSize = unitSize
         self.lotSize = lotSize
         self.value = price * unitSize * lotSize
@@ -490,6 +491,7 @@ class Portfolio:
             "Entry Price",
             "Exit Price",
             "Stop Price",
+            "Breakout Exit Price",
             "Position Size",
             "Lot Size",
             "Gross Profit",
@@ -826,23 +828,27 @@ class Portfolio:
             priceDifference = currPrice - latestUnit.price
             entryATR = sec.longEntryATR
             positions = sec.longPositions
-            stopPriceAdjustment = self.adjustStopATRFactor * entryATR
+            adjustStopATRFactor = self.adjustStopATRFactor
             tradingFunction = self.goLong
         elif type == "short":
             latestUnit = sec.shortPositions[-1]
             priceDifference = latestUnit.price - currPrice
             entryATR = sec.shortEntryATR
             positions = sec.shortPositions
-            stopPriceAdjustment = -self.adjustStopATRFactor * entryATR
+            adjustStopATRFactor = -self.adjustStopATRFactor
             tradingFunction = self.goShort
         else:
             raise RuntimeError("Invalid type in tryToAddMoreUnits.")
 
         if priceDifference >= self.extraUnitATRFactor * entryATR:
-            if self.adjustStopsOnMoreUnits:
-                for unit in positions:
-                    unit.stopPrice += stopPriceAdjustment
             tradingFunction(sec, currPrice, time, tickNum)
+            if self.adjustStopsOnMoreUnits:
+                totalUnitsNow = len(positions)
+                for unitNo, unit in enumerate(positions):
+                    unit.stopPrice = (
+                        unit.originalStopPrice
+                        + (totalUnitsNow - 1 - unitNo) * adjustStopATRFactor * unit.ATR
+                    )
             return True
 
         return False
@@ -909,7 +915,12 @@ class Portfolio:
                     self.tradeHistory.loc[self.tradeHistory.index[-1], "Action"] = (
                         "Stop out"
                     )
-                    self.tradeBook.loc[unit.tradeID, "Exit Type"] = "Stop out"
+                    updateRowOfDataFrame(
+                        df=self.tradeBook,
+                        index=unit.tradeID,
+                        values=["Stop out"],
+                        columns=["Exit Type"],
+                    )
                     numStoppedOut += 1
 
         return numStoppedOut
@@ -951,13 +962,29 @@ class Portfolio:
                 if sec.isLongEntered():
                     prevLow = histPriceData[-self.exitLongBreakout :].min()
                     if currPrice < prevLow:
-                        numExits = sec.getNumTotalPositions()
-                        self.exitAllLongSec(sec, currPrice, time)
+                        while sec.longPositions:
+                            unit = sec.longPositions[-1]
+                            self.popLong(sec, currPrice, time, -1)
+                            updateRowOfDataFrame(
+                                df=self.tradeBook,
+                                index=unit.tradeID,
+                                values=[prevLow],
+                                columns=["Breakout Exit Price"],
+                            )
+                            numExits += 1
                 if sec.isShortEntered():
                     prevHigh = histPriceData[-self.exitLongBreakout :].max()
                     if currPrice > prevHigh:
-                        numExits = sec.getNumTotalPositions()
-                        self.exitAllShortSec(sec, currPrice, time)
+                        while sec.shortPositions:
+                            unit = sec.shortPositions[-1]
+                            self.popShort(sec, currPrice, time, -1)
+                            updateRowOfDataFrame(
+                                df=self.tradeBook,
+                                index=unit.tradeID,
+                                values=[prevHigh],
+                                columns=["Breakout Exit Price"],
+                            )
+                            numExits += 1
         else:
             raise RuntimeError(
                 "Portfolio attribute exitType is neither Timed nor Breakout."
