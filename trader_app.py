@@ -509,7 +509,7 @@ def main():
             "Trade simulation completed.  \n"  # Note the two spaces before \n
         )
         for key, value in st.session_state.Pf.getStats().items():
-            success_message += f"{key} is {value:,}.  \n"  # Two spaces before \n
+            success_message += f"{key} is {value:,.2f}.  \n"  # Two spaces before \n
         st.markdown(success_message)
 
         st.download_button(
