@@ -21,8 +21,9 @@ class Unit:
         ATR,
         stopLossFactor,
         unitSize,
-        lotSize=15,
-        secName="test",
+        lotSize,
+        marginFactor,
+        secName,
     ):
         self.tradeID = tradeID
         self.long = long
@@ -40,6 +41,8 @@ class Unit:
         self.unitSize = unitSize
         self.lotSize = lotSize
         self.value = price * unitSize * lotSize
+        self.marginFactor = marginFactor
+        self.marginReq = self.value * self.marginFactor
         self.secName = secName
 
     def isLong(self):
@@ -63,6 +66,7 @@ class Security:
         initialData,
         name="test",
         lotSize=None,
+        marginFactor=None,
         maxUnits=None,
         ATRAverageRange=None,
         stopLossFactor=None,
@@ -75,6 +79,9 @@ class Security:
         self.name = name
 
         self.lotSize = self.Pf.lotSize if lotSize is None else lotSize
+        self.marginFactor = (
+            self.Pf.marginFactor if marginFactor is None else marginFactor
+        )
         self.maxUnits = self.Pf.maxUnits if maxUnits is None else maxUnits
         self.ATRAverageRange = (
             self.Pf.ATRAverageRange if ATRAverageRange is None else ATRAverageRange
@@ -229,6 +236,7 @@ class Security:
             secName=self.name,
             stopLossFactor=self.stopLossFactor,
             lotSize=self.lotSize,
+            marginFactor=self.marginFactor,
         )
         self.longPositions.append(newLongUnit)
         buyAmount = newLongUnit.value
@@ -247,6 +255,7 @@ class Security:
             secName=self.name,
             stopLossFactor=self.stopLossFactor,
             lotSize=self.lotSize,
+            marginFactor=self.marginFactor,
         )
         self.shortPositions.append(newShortUnit)
         sellAmount = newShortUnit.value
@@ -371,6 +380,7 @@ class Portfolio:
         riskPercentOfAccount=1,
         maxPositionLimitEachWay=12,
         maxUnits=4,
+        marginFactor=0.25,
     ):
 
         # list of securities in this portfolio
@@ -435,6 +445,11 @@ class Portfolio:
 
         # max number of units allowed per security
         self.maxUnits = maxUnits
+
+        # fraction of nominal value required as margin
+        self.marginFactor = marginFactor
+
+        self.marginTotal = 0
 
         # minimum length of initial data
         self.minLengthOfInitialData = (
@@ -502,6 +517,10 @@ class Portfolio:
             "ATR at Entry",
             "ATR at Exit",
             "Notional Account at Entry",
+            "Trade Margin",
+            "Total Margin",
+            "Sec Status",
+            "Pf Status",
         ]
         self.tradeBook = pd.DataFrame(columns=tradeBookColumns)
 
@@ -549,6 +568,8 @@ class Portfolio:
         buyAmount = sec.goLong(price, time, tradeID, tickNum)
         self.numLongPositions += 1
         self.equity -= buyAmount
+        marginReq = sec.longPositions[-1].marginReq
+        self.marginTotal += marginReq
 
         # Create a new DataFrame row with NA entries
         newHistRow = {
@@ -575,6 +596,10 @@ class Portfolio:
             "ATR at Entry": sec.ATR,
             "Total Net Profits at Entry": self.totalNetProfits,
             "Notional Account at Entry": self.notionalAccountSize,
+            "Trade Margin": marginReq,
+            "Total Margin": self.marginTotal,
+            "Sec Status": sec.getQuickSummary(),
+            "Pf Status": self.getQuickSummary(),
         }
         appendToDataFrame(self.tradeBook, newBookRow, tradeID)
 
@@ -583,6 +608,8 @@ class Portfolio:
         sellAmount = sec.goShort(price, time, tradeID, tickNum)
         self.numShortPositions += 1
         self.equity += sellAmount
+        marginReq = sec.shortPositions[-1].marginReq
+        self.marginTotal += marginReq
 
         newHistRow = {
             "Time": time,
@@ -610,6 +637,10 @@ class Portfolio:
             "ATR at Entry": sec.ATR,
             "Total Net Profits at Entry": self.totalNetProfits,
             "Notional Account at Entry": self.notionalAccountSize,
+            "Trade Margin": marginReq,
+            "Total Margin": self.marginTotal,
+            "Sec Status": sec.getQuickSummary(),
+            "Pf Status": self.getQuickSummary(),
         }
         appendToDataFrame(self.tradeBook, newBookRow, tradeID)
 
@@ -620,6 +651,8 @@ class Portfolio:
         self.numLongPositions -= 1
         self.equity += sellAmount
         self.totalNetProfits += netProfit
+        self.marginTotal -= unit.marginReq
+
         newHistRow = {
             "Time": time,
             "Action": "Exit",
@@ -671,6 +704,8 @@ class Portfolio:
         self.numShortPositions -= 1
         self.equity -= buyAmount
         self.totalNetProfits += netProfit
+        self.marginTotal -= unit.marginReq
+
         newHistRow = {
             "Time": time,
             "Action": "Exit",
@@ -740,6 +775,21 @@ class Portfolio:
 
     def isShortLoaded(self):
         return self.numShortPositions >= self.maxPositionLimitEachWay
+
+    def getQuickSummary(self):
+        numLong = 0
+        numShort = 0
+        for sec in self.securities:
+            numLong += sec.getNumLongPositions()
+            numShort += sec.getNumShortPositions()
+        if (not (numLong == self.numLongPositions)) or (
+            not (numShort == self.numShortPositions)
+        ):
+            raise RuntimeError("Doesn't match")
+
+        return (
+            str(self.numLongPositions) + "L" + " " + str(self.numShortPositions) + "S"
+        )
 
     def updateATRs(self, currPriceList):
         for sec, currPrice in zip(self.securities, currPriceList):
@@ -856,11 +906,22 @@ class Portfolio:
     def addUnits(self, currPriceList, time, tickNum, position_type):
         unitsAdded = 0
         Position_type = position_type.capitalize()
-        if not getattr(self, f"is{Position_type}Loaded")():
-            for secNo, sec in enumerate(self.securities):
-                if not sec.isLoaded():
-                    currPrice = currPriceList[secNo]
-                    if not getattr(sec, f"is{Position_type}Entered")():
+        for secNo, sec in enumerate(self.securities):
+            if (not sec.isLoaded()) and (
+                not getattr(self, f"is{Position_type}Loaded")()
+            ):
+                currPrice = currPriceList[secNo]
+                if not getattr(sec, f"is{Position_type}Entered")():
+                    unitsAdded += self.checkToAddNewUnit(
+                        sec=sec,
+                        currPrice=currPrice,
+                        time=time,
+                        tickNum=tickNum,
+                        type=position_type,
+                        entryType=self.entryType,
+                    )
+                else:
+                    if self.addExtraUnits == "As new unit":
                         unitsAdded += self.checkToAddNewUnit(
                             sec=sec,
                             currPrice=currPrice,
@@ -869,26 +930,16 @@ class Portfolio:
                             type=position_type,
                             entryType=self.entryType,
                         )
+                    elif self.addExtraUnits == "Using ATR":
+                        unitsAdded += self.checkToAddMoreUnits(
+                            sec, currPrice, time, tickNum, position_type
+                        )
+                    elif self.addExtraUnits == "No":
+                        pass
                     else:
-                        if self.addExtraUnits == "As new unit":
-                            unitsAdded += self.checkToAddNewUnit(
-                                sec=sec,
-                                currPrice=currPrice,
-                                time=time,
-                                tickNum=tickNum,
-                                type=position_type,
-                                entryType=self.entryType,
-                            )
-                        elif self.addExtraUnits == "Using ATR":
-                            unitsAdded += self.checkToAddMoreUnits(
-                                sec, currPrice, time, tickNum, position_type
-                            )
-                        elif self.addExtraUnits == "No":
-                            pass
-                        else:
-                            raise RuntimeError(
-                                "Invalid type for Portfolio attribute addExtraUnits"
-                            )
+                        raise RuntimeError(
+                            "Invalid type for Portfolio attribute addExtraUnits"
+                        )
         return unitsAdded
 
     def checkEntries(self, currPriceList, time, tickNum):
@@ -1097,13 +1148,21 @@ class Portfolio:
         #     "Transaction cost",
         #     "Net Profit",
         # ]
+        max_margin_index = self.tradeBook["Total Margin"].idxmax()
+        entry_time = self.tradeBook.loc[max_margin_index, "Entry Time"]
+        row_number = (
+            self.tradeBook.index.get_loc(max_margin_index) + 2
+        )  # + 1 for header and + 1 because python is zero indexed as opposed to excel
+        margin_string = f"{self.tradeBook['Total Margin'].max():,.2f} at {entry_time} (Row {row_number} in excel sheet)"
+
         stats = {
-            "Net Profit": self.totalNetProfits,
-            "Gross Profit": self.grossProfit,
-            "Slippage Cost": self.totalSlippageCost,
-            "Transaction Cost": self.totalTransactionCost,
-            "Average Net Profit": self.averageNetProfit,
-            "Average Gross Profit": self.averageGrossProfit,
+            "Net Profit": f"{self.totalNetProfits:,.2f}",
+            "Gross Profit": f"{self.grossProfit:,.2f}",
+            "Slippage Cost": f"{self.totalSlippageCost:,.2f}",
+            "Transaction Cost": f"{self.totalTransactionCost:,.2f}",
+            "Average Net Profit": f"{self.averageNetProfit:,.2f}",
+            "Average Gross Profit": f"{self.averageGrossProfit:,.2f}",
+            "Maximum Margin Requirement": margin_string,
         }
 
         return stats
