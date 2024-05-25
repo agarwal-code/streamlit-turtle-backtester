@@ -1451,7 +1451,7 @@ def computeEdgeRatios(
             )
             # Customizing hover data
             fig.update_traces(
-                modxyze="markers+lines",  # Ensure both markers and lines are shown
+                mode="markers+lines",  # Ensure both markers and lines are shown
                 hoverinfo="all",  # This ensures all relevant data shows on hover
             )
             E_ratios_dfs_figs[sec] = (df, fig)

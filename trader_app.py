@@ -226,6 +226,12 @@ def main():
             value=20,
         )
 
+        ATRAverageRange = st.number_input(
+            "Enter the ATR average range (number in the denominator in the ATR calculation)",
+            min_value=2,
+            value=20,
+        )
+
         with st.expander("Compute E-ratios for these breakouts", expanded=False):
             st.text(
                 "Select the range of time periods (in ticks) over which you would like to compute E-ratios"
@@ -328,12 +334,6 @@ def main():
             min_value=1,
             value=9,
         )
-
-    ATRAverageRange = st.number_input(
-        "Enter the ATR average range (number in the denominator in the ATR calculation)",
-        min_value=2,
-        value=20,
-    )
 
     extraUnitATRFactor = 10000
     addExtraUnits = st.checkbox(
