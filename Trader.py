@@ -381,6 +381,7 @@ class Portfolio:
         maxPositionLimitEachWay=12,
         maxUnits=4,
         marginFactor=0.25,
+        maxMargin=1000000000,
     ):
 
         # list of securities in this portfolio
@@ -448,6 +449,7 @@ class Portfolio:
 
         # fraction of nominal value required as margin
         self.marginFactor = marginFactor
+        self.maxMargin = maxMargin
 
         self.marginTotal = 0
 
@@ -566,10 +568,15 @@ class Portfolio:
     def goLong(self, sec, price, time, tickNum):
         tradeID = self.generateTradeID(time, sec.name)
         buyAmount = sec.goLong(price, time, tradeID, tickNum)
+        marginReq = sec.longPositions[-1].marginReq
+        if marginReq >= self.maxMargin:
+            sec.longPositions.pop()
+            return
+
+        self.marginTotal += marginReq
+
         self.numLongPositions += 1
         self.equity -= buyAmount
-        marginReq = sec.longPositions[-1].marginReq
-        self.marginTotal += marginReq
 
         # Create a new DataFrame row with NA entries
         newHistRow = {
@@ -606,10 +613,15 @@ class Portfolio:
     def goShort(self, sec, price, time, tickNum):
         tradeID = self.generateTradeID(time, sec.name)
         sellAmount = sec.goShort(price, time, tradeID, tickNum)
+        marginReq = sec.shortPositions[-1].marginReq
+        if marginReq >= self.maxMargin:
+            sec.shortPositions.pop()
+            return
+
+        self.marginTotal += marginReq
+
         self.numShortPositions += 1
         self.equity += sellAmount
-        marginReq = sec.shortPositions[-1].marginReq
-        self.marginTotal += marginReq
 
         newHistRow = {
             "Time": time,
@@ -1162,7 +1174,7 @@ class Portfolio:
             "Transaction Cost": f"{self.totalTransactionCost:,.2f}",
             "Average Net Profit": f"{self.averageNetProfit:,.2f}",
             "Average Gross Profit": f"{self.averageGrossProfit:,.2f}",
-            "Maximum Margin Requirement": margin_string,
+            "Maximum Total Margin Requirement": margin_string,
         }
 
         return stats

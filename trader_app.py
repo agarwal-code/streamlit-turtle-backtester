@@ -441,6 +441,13 @@ def main():
     )
     marginFactor = marginFactor / 100
 
+    maxMargin = st.number_input(
+        "Enter the maximum margin allowed per trade",
+        min_value=0,
+        value=1000000,
+        help="e.g. If 1000000, then only trades which have margin requirements less than that will be taken",
+    )
+
     simulate_button = st.button(
         "Simulate Trades", disabled=st.session_state.get("simulating", False)
     )
@@ -488,6 +495,7 @@ def main():
             maxPositionLimitEachWay=maxPositionLimitEachWay,
             maxUnits=maxUnits,
             marginFactor=marginFactor,
+            maxMargin=maxMargin,
         )
         # print(vars(Pf))
         # print(st.session_state.get("lotSizeDict", None))
