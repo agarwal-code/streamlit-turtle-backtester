@@ -225,6 +225,11 @@ class Security:
         return price * unitSize * self.lotSize
 
     def goLong(self, price, time, tradeID, tickNum):
+        maxUnitSize = int(
+            self.Pf.maxMargin / (self.marginFactor * price * self.lotSize)
+        )
+        unitSize = maxUnitSize if self.unitSize > maxUnitSize else self.unitSize
+
         newLongUnit = Unit(
             tradeID=tradeID,
             long=True,
@@ -232,7 +237,7 @@ class Security:
             time=time,
             tickNum=tickNum,
             ATR=self.longEntryATR,
-            unitSize=self.unitSize,
+            unitSize=unitSize,
             secName=self.name,
             stopLossFactor=self.stopLossFactor,
             lotSize=self.lotSize,
@@ -241,9 +246,14 @@ class Security:
         self.longPositions.append(newLongUnit)
         buyAmount = newLongUnit.value
         self.equity -= buyAmount
-        return buyAmount
+        return newLongUnit
 
     def goShort(self, price, time, tradeID, tickNum):
+        maxUnitSize = int(
+            self.Pf.maxMargin / (self.marginFactor * price * self.lotSize)
+        )
+        unitSize = maxUnitSize if self.unitSize > maxUnitSize else self.unitSize
+
         newShortUnit = Unit(
             tradeID=tradeID,
             long=False,
@@ -251,7 +261,7 @@ class Security:
             time=time,
             tickNum=tickNum,
             ATR=self.shortEntryATR,
-            unitSize=self.unitSize,
+            unitSize=unitSize,
             secName=self.name,
             stopLossFactor=self.stopLossFactor,
             lotSize=self.lotSize,
@@ -260,7 +270,7 @@ class Security:
         self.shortPositions.append(newShortUnit)
         sellAmount = newShortUnit.value
         self.equity += sellAmount
-        return sellAmount
+        return newShortUnit
 
     def getPopStats(self, sellPrice, buyPrice, unitSize):
         buyValue = buyPrice * unitSize * self.lotSize
@@ -381,7 +391,7 @@ class Portfolio:
         maxPositionLimitEachWay=12,
         maxUnits=4,
         marginFactor=0.25,
-        maxMargin=1000000000,
+        maxMargin=10000000,
     ):
 
         # list of securities in this portfolio
@@ -483,22 +493,6 @@ class Portfolio:
         self.averageNetProfit = 0
         self.averageGrossProfit = 0
 
-        tradeHistoryColumns = [
-            "Time",
-            "Action",
-            "Long / Short",
-            "Security",
-            "Price",
-            "Equity",
-            "Equity change",
-            "Status of sec",
-            "Entered at",
-            "Profit from trade",
-            "Unit Size",
-            "Lot Size",
-        ]
-        self.tradeHistory = pd.DataFrame(columns=tradeHistoryColumns)
-
         tradeBookColumns = [
             "Entry Time",
             "Exit Time",
@@ -525,9 +519,6 @@ class Portfolio:
             "Pf Status",
         ]
         self.tradeBook = pd.DataFrame(columns=tradeBookColumns)
-
-    # def addSecurity(self, sec): # this is clashing with the function below TBD
-    #     self.securities.append(sec)
 
     def addSecurity(
         self,
@@ -567,38 +558,21 @@ class Portfolio:
 
     def goLong(self, sec, price, time, tickNum):
         tradeID = self.generateTradeID(time, sec.name)
-        buyAmount = sec.goLong(price, time, tradeID, tickNum)
-        marginReq = sec.longPositions[-1].marginReq
-        if marginReq >= self.maxMargin:
-            sec.longPositions.pop()
-            return
+        newLongUnit = sec.goLong(price, time, tradeID, tickNum)
+        buyAmount = newLongUnit.value
+        marginReq = newLongUnit.marginReq
 
         self.marginTotal += marginReq
 
         self.numLongPositions += 1
         self.equity -= buyAmount
 
-        # Create a new DataFrame row with NA entries
-        newHistRow = {
-            "Time": time,
-            "Action": "Enter",
-            "Long / Short": "Long",
-            "Security": sec.name,
-            "Price": price,
-            "Unit Size": sec.unitSize,
-            "Lot Size": sec.lotSize,
-            "Equity change": -buyAmount,
-            "Equity": self.equity,
-            "Status of sec": sec.getQuickSummary(),
-        }
-        appendToDataFrame(self.tradeHistory, newHistRow)
-
         newBookRow = {
             "Entry Time": time,
             "Security": sec.name,
             "Long / Short": "Long",
             "Entry Price": price,
-            "Position Size": sec.unitSize,
+            "Position Size": newLongUnit.unitSize,
             "Lot Size": sec.lotSize,
             "ATR at Entry": sec.ATR,
             "Total Net Profits at Entry": self.totalNetProfits,
@@ -612,39 +586,21 @@ class Portfolio:
 
     def goShort(self, sec, price, time, tickNum):
         tradeID = self.generateTradeID(time, sec.name)
-        sellAmount = sec.goShort(price, time, tradeID, tickNum)
-        marginReq = sec.shortPositions[-1].marginReq
-        if marginReq >= self.maxMargin:
-            sec.shortPositions.pop()
-            return
+        newShortUnit = sec.goShort(price, time, tradeID, tickNum)
+        sellAmount = newShortUnit.value
+        marginReq = newShortUnit.marginReq
 
         self.marginTotal += marginReq
 
         self.numShortPositions += 1
         self.equity += sellAmount
 
-        newHistRow = {
-            "Time": time,
-            "Action": "Enter",
-            "Long / Short": "Short",
-            "Security": sec.name,
-            "Price": price,
-            "Unit Size": sec.unitSize,
-            "Lot Size": sec.lotSize,
-            "Equity change": sellAmount,
-            "Equity": self.equity,
-            "Status of sec": sec.getQuickSummary(),
-            "Profit from trade": np.nan,
-            "Entered at": np.nan,
-        }
-        appendToDataFrame(self.tradeHistory, newHistRow)
-
         newBookRow = {
             "Entry Time": time,
             "Security": sec.name,
             "Long / Short": "Short",
             "Entry Price": price,
-            "Position Size": sec.unitSize,
+            "Position Size": newShortUnit.unitSize,
             "Lot Size": sec.lotSize,
             "ATR at Entry": sec.ATR,
             "Total Net Profits at Entry": self.totalNetProfits,
@@ -664,22 +620,6 @@ class Portfolio:
         self.equity += sellAmount
         self.totalNetProfits += netProfit
         self.marginTotal -= unit.marginReq
-
-        newHistRow = {
-            "Time": time,
-            "Action": "Exit",
-            "Long / Short": "Long",
-            "Security": sec.name,
-            "Price": price,
-            "Unit Size": sec.unitSize,
-            "Lot Size": sec.lotSize,
-            "Equity change": sellAmount,
-            "Entered at": unit.time,
-            "Profit from trade": grossProfit,
-            "Equity": self.equity,
-            "Status of sec": sec.getQuickSummary(),
-        }
-        appendToDataFrame(self.tradeHistory, newHistRow)
 
         columns_to_update = [
             "Stop Price",
@@ -717,22 +657,6 @@ class Portfolio:
         self.equity -= buyAmount
         self.totalNetProfits += netProfit
         self.marginTotal -= unit.marginReq
-
-        newHistRow = {
-            "Time": time,
-            "Action": "Exit",
-            "Long / Short": "Short",
-            "Security": sec.name,
-            "Price": price,
-            "Unit Size": sec.unitSize,
-            "Lot Size": sec.lotSize,
-            "Equity change": -buyAmount,
-            "Entered at": unit.time,
-            "Profit from trade": grossProfit,
-            "Equity": self.equity,
-            "Status of sec": sec.getQuickSummary(),
-        }
-        appendToDataFrame(self.tradeHistory, newHistRow)
 
         columns_to_update = [
             "Stop Price",
@@ -975,9 +899,6 @@ class Portfolio:
                 unit = positions[unitNo]
                 if eval(stopCondition):
                     popFunction(sec, currPrice, time, unitNo)
-                    self.tradeHistory.loc[self.tradeHistory.index[-1], "Action"] = (
-                        "Stop out"
-                    )
                     updateRowOfDataFrame(
                         df=self.tradeBook,
                         index=unit.tradeID,
