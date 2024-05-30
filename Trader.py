@@ -1152,6 +1152,9 @@ class Portfolio:
         # max number of units allowed per security
         data_dict["Max units per security"] = self.maxUnits
 
+        data_dict["Margin percentage"] = self.marginFactor
+        data_dict["Max margin per trade"] = self.maxMargin
+
         return data_dict
 
     def getTradeBook(self, format=None, parameter_sheet=False):
