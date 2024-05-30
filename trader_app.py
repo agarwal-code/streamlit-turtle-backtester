@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import Trader
 import plotly.express as px
+import time
 
 
 def main():
@@ -505,12 +506,18 @@ def main():
         )
 
         progress_bar = st.progress(0)
+        start_time = time.time()
+
         Pf.run_simulation(progress_callback=lambda x: progress_bar.progress(x * 0.9))
         st.session_state.Pf = Pf
         st.session_state.tradeBook_excel = Pf.getTradeBook(
             format="excel", parameter_sheet=True
         )
         st.session_state.tradeBook_csv = Pf.getTradeBook(format="csv")
+
+        end_time = time.time()
+        st.session_state.simulation_time = end_time - start_time
+
         progress_bar.progress(1.0)
         st.session_state.run_complete = True
         sim_message_placeholder.empty()
@@ -523,9 +530,7 @@ def main():
     if st.session_state.get("run_complete", False) and not st.session_state.get(
         "simulating", False
     ):
-        success_message = (
-            "Trade simulation completed.  \n"  # Note the two spaces before \n
-        )
+        success_message = f"Trade simulation completed in {st.session_state.simulation_time:.2f} seconds.  \n"  # Note the two spaces before \n
         for key, value in st.session_state.Pf.getStats().items():
             success_message += f"{key} is {value}.  \n"  # Two spaces before \n
         st.markdown(success_message)
