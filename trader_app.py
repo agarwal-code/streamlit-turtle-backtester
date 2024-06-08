@@ -201,6 +201,12 @@ def main():
         "5. MACD Zero Crossover: enter when MACD crosses zero line, equivalent to EMA crossover.",
     )
 
+    ATRAverageRange = st.number_input(
+        "Enter the ATR average range (number in the denominator in the ATR calculation)",
+        min_value=2,
+        value=20,
+    )
+
     longAtHigh = True
     longBreakout = 20
     shortBreakout = 20
@@ -224,12 +230,6 @@ def main():
         shortBreakout = st.number_input(
             "Enter the number of ticks for short breakout",
             min_value=1,
-            value=20,
-        )
-
-        ATRAverageRange = st.number_input(
-            "Enter the ATR average range (number in the denominator in the ATR calculation)",
-            min_value=2,
             value=20,
         )
 
