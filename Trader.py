@@ -969,6 +969,23 @@ class Portfolio:
                                 columns=["Breakout Exit Price"],
                             )
                             numExits += 1
+        elif self.exitType == "MACD-Signal Crossover":
+            for sec, currPrice in zip(self.securities, currPriceList):
+                currMACD = sec.MACD
+                prevMACD = sec.histData["MACD"].iat[-2]
+                currSignal = sec.signal
+                prevSignal = sec.histData["Signal"].iat[-2]
+                if (currMACD < currSignal) and (prevMACD > prevSignal):
+                    while sec.longPositions:
+                        unit = sec.longPositions[-1]
+                        self.popLong(sec, currPrice, time, -1)
+                        numExits += 1
+                if (currMACD > currSignal) and (prevMACD < prevSignal):
+                    while sec.shortPositions:
+                        unit = sec.shortPositions[-1]
+                        self.popShort(sec, currPrice, time, -1)
+                        numExits += 1
+
         else:
             raise RuntimeError(
                 "Portfolio attribute exitType is neither Timed nor Breakout."

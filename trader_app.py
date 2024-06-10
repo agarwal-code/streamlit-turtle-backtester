@@ -383,27 +383,33 @@ def main():
                     help="If this is 0.5, then previous stop price for an entered short unit will be decreased by 0.5*(Entry ATR) for every additional short unit entered",
                 )
 
-    exitType = st.radio("Select type of exits to use", ("Breakout", "Timed"))
+    exitType = st.radio(
+        "Select type of exits to use", ("Breakout", "Timed", "MACD-Signal Crossover")
+    )
     if exitType == "Timed":
         exitBreakoutMessage = (
             "Enter the number of ticks for exiting {} positions"
             + " (e.g. if 30, positions will be exited 30 ticks after entry)"
         )
-    else:
+    elif exitType == "Breakout":
         exitBreakoutMessage = (
             "Enter length of exit breakout for {0} positions"
             + " (e.g. if 20, then {0} positions will be exited at a 20-tick low)"
         )
-    exitLongBreakout = st.number_input(
-        exitBreakoutMessage.format("long"),
-        min_value=1,
-        value=10,
-    )
-    exitShortBreakout = st.number_input(
-        exitBreakoutMessage.format("short"),
-        min_value=1,
-        value=10,
-    )
+
+    exitLongBreakout = 10
+    exitShortBreakout = 10
+    if not (exitType == "MACD-Signal Crossover"):
+        exitLongBreakout = st.number_input(
+            exitBreakoutMessage.format("long"),
+            min_value=1,
+            value=10,
+        )
+        exitShortBreakout = st.number_input(
+            exitBreakoutMessage.format("short"),
+            min_value=1,
+            value=10,
+        )
 
     notionalAccountSize = st.number_input(
         "Enter the notional account size", value=1000000.0
