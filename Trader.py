@@ -774,13 +774,13 @@ class Portfolio:
                 priceCondition = (
                     currPrice > prevHigh if self.longAtHigh else currPrice < prevLow
                 )
-                if "MACD-Signal Condition" in type:
+                if "MACD-Signal Condition" in entryType:
                     priceCondition = priceCondition and (currMACD > currSignal)
             elif type == "short":
                 priceCondition = (
                     currPrice < prevLow if self.longAtHigh else currPrice > prevHigh
                 )
-                if "MACD-Signal Condition" in type:
+                if "MACD-Signal Condition" in entryType:
                     priceCondition = priceCondition and (currMACD < currSignal)
         elif "MACD-Signal Crossover" in entryType:
             if type == "long":
